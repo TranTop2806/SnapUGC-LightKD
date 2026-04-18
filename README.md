@@ -108,7 +108,7 @@ The report includes PLCC, SRCC, KRCC, MSE, MAE, and `final_score = 0.6 * SRCC + 
 Create a GitHub repo named `snapugc-lightkd`, push this repository, then run `notebooks/kaggle_final_1000.ipynb`. The first notebook cell clones:
 
 ```bash
-git clone https://github.com/TranTop2806/snapugc-lightkd.git /kaggle/working/SnapUGC-LightKD
+git clone https://github.com/TranTop2806/SnapUGC-LightKD.git /kaggle/working/SnapUGC-LightKD
 ```
 
 Update `GITHUB_REPO` in the notebook if the GitHub URL is different.
