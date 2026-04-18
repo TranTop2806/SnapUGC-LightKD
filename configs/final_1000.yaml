@@ -1,7 +1,7 @@
 # Reference configuration for the first thesis-scale run.
 # The current scripts use argparse; keep this file as the documented run contract.
 extraction:
-  max_videos: 1000
+  max_videos: 2000
   num_frames: 16
   motion_clips: 4
   motion_frames: 16

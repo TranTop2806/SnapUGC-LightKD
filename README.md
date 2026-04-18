@@ -115,4 +115,4 @@ Update `GITHUB_REPO` in the notebook if the GitHub URL is different.
 
 ## Kaggle
 
-Use `notebooks/kaggle_final_1000.ipynb`. Despite the legacy filename, it now defaults to a bounded 300-video run with DOVER-Mobile and BLIP-base captioning, then trains Teacher/Student/KD and zips the outputs. Increase `MAX_VIDEOS` only after the 300-video run finishes successfully.
+Use `notebooks/kaggle_final_1000.ipynb`. Despite the legacy filename, it now defaults to a 2000-video run with DOVER-Mobile and BLIP-base captioning, then trains Teacher/Student/KD and zips the outputs. Lower `MAX_VIDEOS` only for debugging.
