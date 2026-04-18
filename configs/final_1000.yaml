@@ -5,10 +5,10 @@ extraction:
   num_frames: 16
   motion_clips: 4
   motion_frames: 16
-  qwen_frames: 8
+  caption_frames: 3
   clip_model: openai/clip-vit-base-patch16
   text_model: sentence-transformers/sentence-t5-base
-  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  caption_model: Salesforce/blip-image-captioning-base
 
 training:
   teacher_hidden: 512

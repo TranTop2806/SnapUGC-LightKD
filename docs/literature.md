@@ -16,7 +16,9 @@ This repo keeps only the final thesis pipeline: SnapUGC-LightKD.
 - DOVER: video UGC technical/aesthetic quality, replacing image-only MUSIQ/TOPIQ.
 - YAMNet: lightweight AudioSet background sound representation.
 - Sentence-T5-base: T5-family sentence embeddings for title/description/caption/rationale.
-- Qwen2.5-VL-3B-Instruct: offline caption/rationale annotator, not used as deployed student input.
+- BLIP-base: lightweight captioning substitute for the heavier mPLUG-2/LVLM captioning
+  components used in related work. This keeps the Kaggle run reproducible on T4 GPUs while
+  preserving a semantic caption signal for the teacher.
 
 ## KD Design
 

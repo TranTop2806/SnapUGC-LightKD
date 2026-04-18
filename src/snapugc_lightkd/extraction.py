@@ -7,7 +7,7 @@ Feature groups:
   - DOVER scores from a precomputed CSV: technical/aesthetic/overall video quality
   - YAMNet AudioSet embedding/probabilities: background sound
   - Sentence-T5-base embeddings: metadata, caption, rationale text
-  - Qwen2.5-VL-3B-Instruct offline caption/rationale: optional but recommended
+  - BLIP-base lightweight frame captioning
 
 This script is designed for Kaggle first, but keeps fallbacks so the pipeline can
 smoke-test locally when heavy dependencies are unavailable.
@@ -31,7 +31,7 @@ from tqdm.auto import tqdm
 
 
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
-QWEN_DEVICE = "cuda:1" if torch.cuda.is_available() and torch.cuda.device_count() > 1 else DEVICE
+
 
 @dataclass
 class VideoItem:
@@ -329,11 +329,11 @@ class SentenceT5Encoder:
         return np.asarray(emb, dtype=np.float32)
 
 
-class QwenCaptioner:
+class BLIPCaptioner:
     def __init__(
         self,
-        model_id="Qwen/Qwen2.5-VL-3B-Instruct",
-        device=QWEN_DEVICE,
+        model_id="Salesforce/blip-image-captioning-base",
+        device=DEVICE,
         enabled=True,
         strict=False,
     ):
@@ -342,117 +342,79 @@ class QwenCaptioner:
         self.strict = strict
         self.device = device
         if not enabled:
-            print("[Qwen] disabled")
+            print("[BLIP] disabled")
             return
         try:
-            from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
-            self.processor = AutoProcessor.from_pretrained(model_id)
-            dtype = torch.float16 if str(device).startswith("cuda") else torch.float32
-            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                model_id,
-                torch_dtype=dtype,
-                device_map=None,
-                attn_implementation="eager",
-            )
-            self.model = self.model.to(device)
-            self.model.eval()
+            from transformers import BlipForConditionalGeneration, BlipProcessor
+
+            self.processor = BlipProcessor.from_pretrained(model_id)
+            self.model = BlipForConditionalGeneration.from_pretrained(model_id).to(device).eval()
             self.available = True
-            print(f"[Qwen] loaded {model_id} on {device}")
+            print(f"[BLIP] loaded {model_id} on {device}")
         except Exception as exc:
-            message = f"[Qwen] unavailable ({exc}); captions/rationales will be empty"
+            message = f"[BLIP] unavailable ({exc}); captions will be empty"
             if strict:
                 raise RuntimeError(message) from exc
             print(message)
 
     @torch.no_grad()
-    def caption_and_rationale(self, frames: Sequence[Image.Image], title: str, description: str) -> Tuple[str, str, List[str]]:
+    def caption(self, frames: Sequence[Image.Image], num_frames: int = 3) -> Tuple[str, List[str]]:
         if not self.available or not frames:
-            return "", "", []
+            return "", []
         try:
-            from qwen_vl_utils import process_vision_info
-
-            selected = list(frames[:8])
-            content = [{"type": "image", "image": img} for img in selected]
-            prompt = (
-                "You are analyzing a short social-media video from sampled frames and metadata.\n"
-                f"Title: {title}\nDescription: {description}\n"
-                "Return exactly three sections:\n"
-                "CAPTION: concise factual caption.\n"
-                "EVENTS: comma-separated important visual events.\n"
-                "RATIONALE: short explanation of engagement cues.\n"
-                "Do not mention or guess the ground-truth ECR."
-            )
-            content.append({"type": "text", "text": prompt})
-            messages = [{"role": "user", "content": content}]
-            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            image_inputs, video_inputs = process_vision_info(messages)
-            inputs = self.processor(
-                text=[text], images=image_inputs, videos=video_inputs,
-                padding=True, return_tensors="pt"
-            )
-            target_device = next(self.model.parameters()).device
-            inputs = {k: v.to(target_device) for k, v in inputs.items()}
+            count = max(1, min(int(num_frames), len(frames)))
+            indices = np.linspace(0, len(frames) - 1, count, dtype=int)
+            selected = [frames[int(i)].convert("RGB") for i in indices]
+            inputs = self.processor(images=selected, return_tensors="pt", padding=True)
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
             generated = self.model.generate(
                 **inputs,
-                max_new_tokens=96,
-                do_sample=False,
                 num_beams=1,
+                do_sample=False,
+                max_new_tokens=32,
             )
-            generated = generated[:, inputs["input_ids"].shape[1]:]
-            output = self.processor.batch_decode(generated, skip_special_tokens=True)[0].strip()
-            return self._parse_output(output)
+            captions = [
+                self.processor.decode(ids, skip_special_tokens=True).strip()
+                for ids in generated
+            ]
+            captions = [c for c in captions if c]
+            if self.strict and not captions:
+                raise RuntimeError("BLIP produced empty captions")
+            unique = list(dict.fromkeys(captions))
+            if not unique:
+                return "", []
+            caption = " | ".join(unique)
+            return caption, unique
         except Exception as exc:
-            if self.strict or "CUDA error" in str(exc) or "device-side assert" in str(exc):
-                raise RuntimeError(f"Qwen captioning failed: {exc}") from exc
-            tqdm.write(f"[Qwen] failed: {exc}")
-            return "", "", []
-
-    @staticmethod
-    def _parse_output(output: str) -> Tuple[str, str, List[str]]:
-        caption, rationale, events_text = output, "", ""
-        for line in output.splitlines():
-            low = line.lower().strip()
-            if low.startswith("caption:"):
-                caption = line.split(":", 1)[1].strip()
-            elif low.startswith("events:"):
-                events_text = line.split(":", 1)[1].strip()
-            elif low.startswith("rationale:"):
-                rationale = line.split(":", 1)[1].strip()
-        events = [e.strip() for e in events_text.split(",") if e.strip()]
-        return caption, rationale, events
-
-
-class QwenCaptionLookup:
-    def __init__(self, json_path: Optional[str], strict: bool = False):
-        self.by_id: Dict[str, Dict] = {}
-        self.strict = strict
-        if not json_path:
-            return
-        if not os.path.exists(json_path):
-            raise FileNotFoundError(f"Qwen caption JSON not found: {json_path}")
-        with open(json_path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        rows = payload.values() if isinstance(payload, dict) else payload
-        for row in rows:
-            video_id = str(row.get("video_id", "")).strip()
-            if video_id:
-                self.by_id[video_id] = row
-        print(f"[QwenLookup] loaded {len(self.by_id)} captions from {json_path}")
-
-    def get(self, video_id: str) -> Tuple[str, str, List[str]]:
-        row = self.by_id.get(str(video_id))
-        if not row:
             if self.strict:
-                raise RuntimeError(f"Missing Qwen caption for video_id={video_id}")
-            return "", "", []
-        caption = str(row.get("qwen_caption", "")).strip()
-        rationale = str(row.get("qwen_engagement_rationale", "")).strip()
-        events = row.get("qwen_visual_events", [])
-        if isinstance(events, str):
-            events = [e.strip() for e in events.split(",") if e.strip()]
-        if self.strict and not caption:
-            raise RuntimeError(f"Empty Qwen caption for video_id={video_id}")
-        return caption, rationale, list(events or [])
+                raise RuntimeError(f"BLIP captioning failed: {exc}") from exc
+            tqdm.write(f"[BLIP] failed: {exc}")
+            return "", []
+
+
+def build_rationale(
+    item: VideoItem,
+    caption: str,
+    quality: Dict[str, float],
+    audio_top: Sequence[Dict],
+) -> str:
+    parts = []
+    if caption:
+        parts.append(f"Visual caption: {caption}.")
+    metadata = " | ".join([p for p in [item.title, item.description, item.hashtags] if p.strip()])
+    if metadata:
+        parts.append(f"Metadata context: {metadata}.")
+    parts.append(
+        "Quality cues: "
+        f"aesthetic={quality.get('aesthetic', 0.5):.3f}, "
+        f"technical={quality.get('technical', 0.5):.3f}, "
+        f"overall={quality.get('overall', 0.5):.3f}."
+    )
+    if audio_top:
+        labels = [str(row.get("label", "")).strip() for row in audio_top[:3] if row.get("label")]
+        if labels:
+            parts.append(f"Audio cues: {', '.join(labels)}.")
+    return " ".join(parts)
 
 
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".webm", ".avi")
@@ -567,7 +529,7 @@ def save_results(results: List[Dict], path: str):
 def extract_final_features(args):
     print("=" * 80)
     print("Final Feature Extraction | SnapUGC-LightKD")
-    print(f"Device: {DEVICE} | Qwen device: {args.qwen_device} | Max videos: {args.max}")
+    print(f"Device: {DEVICE} | Caption device: {args.caption_device} | Max videos: {args.max}")
     print("=" * 80)
 
     existing = load_existing(args.out)
@@ -588,15 +550,12 @@ def extract_final_features(args):
     dover = DoverScoreLookup(args.dover_csv)
     yamnet = None if args.skip_audio else YAMNetExtractor()
     text_encoder = SentenceT5Encoder(args.text_model)
-    qwen_lookup = QwenCaptionLookup(args.qwen_json, strict=args.strict_qwen) if args.qwen_json else None
-    qwen = None
-    if qwen_lookup is None:
-        qwen = QwenCaptioner(
-            args.qwen_model,
-            device=args.qwen_device,
-            enabled=not args.skip_qwen,
-            strict=args.strict_qwen,
-        )
+    captioner = BLIPCaptioner(
+        args.caption_model,
+        device=args.caption_device,
+        enabled=not args.skip_caption,
+        strict=args.strict_caption,
+    )
 
     results = list(existing)
     errors = 0
@@ -616,19 +575,8 @@ def extract_final_features(args):
                 clips = reader.read_motion_clips(item.video_path, args.motion_clips, args.motion_frames)
                 motion_feats = motion.encode(clips)
 
-            if qwen_lookup is not None:
-                qwen_caption, qwen_rationale, qwen_events = qwen_lookup.get(item.video_id)
-            else:
-                qwen_caption, qwen_rationale, qwen_events = qwen.caption_and_rationale(
-                    frames[:args.qwen_frames], item.title, item.description
-                )
+            caption_text, frame_captions = captioner.caption(frames, args.caption_frames)
             metadata_text = " | ".join([p for p in [item.title, item.description, item.hashtags] if p.strip()])
-            caption_text = qwen_caption
-            rationale_text = qwen_rationale
-
-            metadata_emb = text_encoder.encode(metadata_text)
-            caption_emb = text_encoder.encode(caption_text)
-            rationale_emb = text_encoder.encode(rationale_text)
 
             audio_emb = np.zeros(1024, dtype=np.float32)
             audio_probs = np.zeros(521, dtype=np.float32)
@@ -637,6 +585,11 @@ def extract_final_features(args):
                 audio_emb, audio_probs, audio_top = yamnet.encode(item.video_path)
 
             quality = dover.score(item.video_id)
+            rationale_text = build_rationale(item, caption_text, quality, audio_top)
+
+            metadata_emb = text_encoder.encode(metadata_text)
+            caption_emb = text_encoder.encode(caption_text)
+            rationale_emb = text_encoder.encode(rationale_text)
 
             result = {
                 "video_id": item.video_id,
@@ -662,9 +615,11 @@ def extract_final_features(args):
                 "yamnet_embedding_mean": audio_emb.tolist(),
                 "yamnet_class_probs": audio_probs.tolist(),
                 "yamnet_top_classes": audio_top,
-                "qwen_caption": qwen_caption,
-                "qwen_engagement_rationale": qwen_rationale,
-                "qwen_visual_events": qwen_events,
+                "caption": caption_text,
+                "caption_source": "blip" if caption_text else "empty",
+                "blip_caption": caption_text,
+                "blip_frame_captions": frame_captions,
+                "engagement_rationale": rationale_text,
                 "metadata_text_embedding": metadata_emb.tolist(),
                 "caption_embedding": caption_emb.tolist(),
                 "rationale_embedding": rationale_emb.tolist(),
@@ -711,15 +666,14 @@ def main():
     parser.add_argument("--num-frames", type=int, default=16)
     parser.add_argument("--motion-clips", type=int, default=4)
     parser.add_argument("--motion-frames", type=int, default=16)
-    parser.add_argument("--qwen-frames", type=int, default=8)
+    parser.add_argument("--caption-frames", type=int, default=3)
     parser.add_argument("--clip-model", default="openai/clip-vit-base-patch16")
     parser.add_argument("--text-model", default="sentence-transformers/sentence-t5-base")
-    parser.add_argument("--qwen-model", default="Qwen/Qwen2.5-VL-3B-Instruct")
-    parser.add_argument("--qwen-device", default=QWEN_DEVICE)
-    parser.add_argument("--qwen-json", default=None, help="Precomputed Qwen caption JSON keyed by video_id.")
+    parser.add_argument("--caption-model", default="Salesforce/blip-image-captioning-base")
+    parser.add_argument("--caption-device", default=DEVICE)
     parser.add_argument("--dover-csv", default=None, help="Precomputed DOVER CSV. Missing means neutral quality scores.")
-    parser.add_argument("--strict-qwen", action="store_true", help="Abort immediately if Qwen captioning fails.")
-    parser.add_argument("--skip-qwen", action="store_true")
+    parser.add_argument("--strict-caption", action="store_true", help="Abort immediately if BLIP captioning fails.")
+    parser.add_argument("--skip-caption", action="store_true")
     parser.add_argument("--skip-audio", action="store_true")
     parser.add_argument("--skip-motion", action="store_true")
     args = parser.parse_args()

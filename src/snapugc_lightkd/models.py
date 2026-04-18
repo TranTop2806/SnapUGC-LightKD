@@ -224,7 +224,7 @@ class StudentModel(nn.Module):
       - Sentence-T5 metadata embedding
 
     It learns quality heads and teacher attention via KD, but does not receive
-    DOVER/motion/Qwen features directly.
+    DOVER/motion/BLIP-caption features directly.
     """
 
     def __init__(self, clip_dim=512, audio_dim=1024, text_dim=768,

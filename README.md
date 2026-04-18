@@ -13,7 +13,7 @@ Video + metadata
   |-- DOVER technical/aesthetic/overall quality scores
   |-- YAMNet AudioSet background-sound embedding/classes
   |-- Sentence-T5-base metadata/caption/rationale embeddings
-  |-- Qwen2.5-VL-3B-Instruct offline caption/rationale
+  |-- BLIP-base lightweight frame captions
   |
 Teacher: visual + motion + quality + audio + metadata + caption + rationale
 Student: visual + audio + metadata
@@ -65,7 +65,7 @@ python scripts/extract_features.py \
   --videos data/train_videos \
   --out features/features_smoke.json \
   --max 20 \
-  --skip-qwen --skip-motion --skip-audio
+  --skip-caption --skip-motion --skip-audio
 ```
 
 ## Training
@@ -115,4 +115,4 @@ Update `GITHUB_REPO` in the notebook if the GitHub URL is different.
 
 ## Kaggle
 
-Use `notebooks/kaggle_final_1000.ipynb`. Despite the legacy filename, it now defaults to a bounded 300-video run with DOVER-Mobile and Qwen enabled, then trains Teacher/Student/KD and zips the outputs. Increase `MAX_VIDEOS` only after the 300-video run finishes successfully.
+Use `notebooks/kaggle_final_1000.ipynb`. Despite the legacy filename, it now defaults to a bounded 300-video run with DOVER-Mobile and BLIP-base captioning, then trains Teacher/Student/KD and zips the outputs. Increase `MAX_VIDEOS` only after the 300-video run finishes successfully.
