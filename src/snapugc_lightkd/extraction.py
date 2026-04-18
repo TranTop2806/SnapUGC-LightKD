@@ -204,6 +204,7 @@ class DoverScoreLookup:
                     "technical": self._value(row, ["technical", "tech"], 0.5),
                     "aesthetic": self._value(row, ["aesthetic", "aes"], 0.5),
                     "overall": self._value(row, ["overall", "quality", "score", "dover"], 0.5),
+                    "found": True,
                 }
             print(f"[DOVER] loaded {len(self.by_id)} score rows from {csv_path}")
         else:
@@ -238,7 +239,10 @@ class DoverScoreLookup:
         return default
 
     def score(self, video_id: str) -> Dict[str, float]:
-        return self.by_id.get(str(video_id), {"technical": 0.5, "aesthetic": 0.5, "overall": 0.5})
+        return self.by_id.get(
+            str(video_id),
+            {"technical": 0.5, "aesthetic": 0.5, "overall": 0.5, "found": False},
+        )
 
 
 class YAMNetExtractor:
@@ -418,6 +422,39 @@ class QwenCaptioner:
         return caption, rationale, events
 
 
+class QwenCaptionLookup:
+    def __init__(self, json_path: Optional[str], strict: bool = False):
+        self.by_id: Dict[str, Dict] = {}
+        self.strict = strict
+        if not json_path:
+            return
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(f"Qwen caption JSON not found: {json_path}")
+        with open(json_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        rows = payload.values() if isinstance(payload, dict) else payload
+        for row in rows:
+            video_id = str(row.get("video_id", "")).strip()
+            if video_id:
+                self.by_id[video_id] = row
+        print(f"[QwenLookup] loaded {len(self.by_id)} captions from {json_path}")
+
+    def get(self, video_id: str) -> Tuple[str, str, List[str]]:
+        row = self.by_id.get(str(video_id))
+        if not row:
+            if self.strict:
+                raise RuntimeError(f"Missing Qwen caption for video_id={video_id}")
+            return "", "", []
+        caption = str(row.get("qwen_caption", "")).strip()
+        rationale = str(row.get("qwen_engagement_rationale", "")).strip()
+        events = row.get("qwen_visual_events", [])
+        if isinstance(events, str):
+            events = [e.strip() for e in events.split(",") if e.strip()]
+        if self.strict and not caption:
+            raise RuntimeError(f"Empty Qwen caption for video_id={video_id}")
+        return caption, rationale, list(events or [])
+
+
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".webm", ".avi")
 
 
@@ -551,12 +588,15 @@ def extract_final_features(args):
     dover = DoverScoreLookup(args.dover_csv)
     yamnet = None if args.skip_audio else YAMNetExtractor()
     text_encoder = SentenceT5Encoder(args.text_model)
-    qwen = QwenCaptioner(
-        args.qwen_model,
-        device=args.qwen_device,
-        enabled=not args.skip_qwen,
-        strict=args.strict_qwen,
-    )
+    qwen_lookup = QwenCaptionLookup(args.qwen_json, strict=args.strict_qwen) if args.qwen_json else None
+    qwen = None
+    if qwen_lookup is None:
+        qwen = QwenCaptioner(
+            args.qwen_model,
+            device=args.qwen_device,
+            enabled=not args.skip_qwen,
+            strict=args.strict_qwen,
+        )
 
     results = list(existing)
     errors = 0
@@ -576,9 +616,12 @@ def extract_final_features(args):
                 clips = reader.read_motion_clips(item.video_path, args.motion_clips, args.motion_frames)
                 motion_feats = motion.encode(clips)
 
-            qwen_caption, qwen_rationale, qwen_events = qwen.caption_and_rationale(
-                frames[:args.qwen_frames], item.title, item.description
-            )
+            if qwen_lookup is not None:
+                qwen_caption, qwen_rationale, qwen_events = qwen_lookup.get(item.video_id)
+            else:
+                qwen_caption, qwen_rationale, qwen_events = qwen.caption_and_rationale(
+                    frames[:args.qwen_frames], item.title, item.description
+                )
             metadata_text = " | ".join([p for p in [item.title, item.description, item.hashtags] if p.strip()])
             caption_text = qwen_caption
             rationale_text = qwen_rationale
@@ -673,6 +716,7 @@ def main():
     parser.add_argument("--text-model", default="sentence-transformers/sentence-t5-base")
     parser.add_argument("--qwen-model", default="Qwen/Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--qwen-device", default=QWEN_DEVICE)
+    parser.add_argument("--qwen-json", default=None, help="Precomputed Qwen caption JSON keyed by video_id.")
     parser.add_argument("--dover-csv", default=None, help="Precomputed DOVER CSV. Missing means neutral quality scores.")
     parser.add_argument("--strict-qwen", action="store_true", help="Abort immediately if Qwen captioning fails.")
     parser.add_argument("--skip-qwen", action="store_true")
