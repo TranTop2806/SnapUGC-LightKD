@@ -30,7 +30,8 @@ from PIL import Image
 from tqdm.auto import tqdm
 
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+QWEN_DEVICE = "cuda:1" if torch.cuda.is_available() and torch.cuda.device_count() > 1 else DEVICE
 
 @dataclass
 class VideoItem:
@@ -243,6 +244,13 @@ class DoverScoreLookup:
 class YAMNetExtractor:
     def __init__(self):
         try:
+            import tensorflow as tf
+
+            try:
+                # Keep TensorFlow/YAMNet on CPU so PyTorch models own the Kaggle GPUs.
+                tf.config.set_visible_devices([], "GPU")
+            except Exception:
+                pass
             import tensorflow_hub as hub
             self.hub = hub
             self.model = hub.load("https://tfhub.dev/google/yamnet/1")
@@ -318,28 +326,39 @@ class SentenceT5Encoder:
 
 
 class QwenCaptioner:
-    def __init__(self, model_id="Qwen/Qwen2.5-VL-3B-Instruct", device=DEVICE, enabled=True):
+    def __init__(
+        self,
+        model_id="Qwen/Qwen2.5-VL-3B-Instruct",
+        device=QWEN_DEVICE,
+        enabled=True,
+        strict=False,
+    ):
         self.enabled = enabled
         self.available = False
+        self.strict = strict
+        self.device = device
         if not enabled:
             print("[Qwen] disabled")
             return
         try:
             from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
             self.processor = AutoProcessor.from_pretrained(model_id)
-            dtype = torch.float16 if device == "cuda" else torch.float32
+            dtype = torch.float16 if str(device).startswith("cuda") else torch.float32
             self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 model_id,
                 torch_dtype=dtype,
-                device_map="auto" if device == "cuda" else None,
+                device_map=None,
+                attn_implementation="eager",
             )
-            if device != "cuda":
-                self.model = self.model.to(device)
+            self.model = self.model.to(device)
             self.model.eval()
             self.available = True
-            print(f"[Qwen] loaded {model_id}")
+            print(f"[Qwen] loaded {model_id} on {device}")
         except Exception as exc:
-            print(f"[Qwen] unavailable ({exc}); captions/rationales will be empty")
+            message = f"[Qwen] unavailable ({exc}); captions/rationales will be empty"
+            if strict:
+                raise RuntimeError(message) from exc
+            print(message)
 
     @torch.no_grad()
     def caption_and_rationale(self, frames: Sequence[Image.Image], title: str, description: str) -> Tuple[str, str, List[str]]:
@@ -367,12 +386,20 @@ class QwenCaptioner:
                 text=[text], images=image_inputs, videos=video_inputs,
                 padding=True, return_tensors="pt"
             )
-            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-            generated = self.model.generate(**inputs, max_new_tokens=120)
+            target_device = next(self.model.parameters()).device
+            inputs = {k: v.to(target_device) for k, v in inputs.items()}
+            generated = self.model.generate(
+                **inputs,
+                max_new_tokens=96,
+                do_sample=False,
+                num_beams=1,
+            )
             generated = generated[:, inputs["input_ids"].shape[1]:]
             output = self.processor.batch_decode(generated, skip_special_tokens=True)[0].strip()
             return self._parse_output(output)
         except Exception as exc:
+            if self.strict or "CUDA error" in str(exc) or "device-side assert" in str(exc):
+                raise RuntimeError(f"Qwen captioning failed: {exc}") from exc
             tqdm.write(f"[Qwen] failed: {exc}")
             return "", "", []
 
@@ -503,7 +530,7 @@ def save_results(results: List[Dict], path: str):
 def extract_final_features(args):
     print("=" * 80)
     print("Final Feature Extraction | SnapUGC-LightKD")
-    print(f"Device: {DEVICE} | Max videos: {args.max}")
+    print(f"Device: {DEVICE} | Qwen device: {args.qwen_device} | Max videos: {args.max}")
     print("=" * 80)
 
     existing = load_existing(args.out)
@@ -524,10 +551,17 @@ def extract_final_features(args):
     dover = DoverScoreLookup(args.dover_csv)
     yamnet = None if args.skip_audio else YAMNetExtractor()
     text_encoder = SentenceT5Encoder(args.text_model)
-    qwen = QwenCaptioner(args.qwen_model, enabled=not args.skip_qwen)
+    qwen = QwenCaptioner(
+        args.qwen_model,
+        device=args.qwen_device,
+        enabled=not args.skip_qwen,
+        strict=args.strict_qwen,
+    )
 
     results = list(existing)
     errors = 0
+    new_count = 0
+    consecutive_errors = 0
     t0 = time.time()
 
     for item in tqdm(work, desc="Extract final features", unit="video"):
@@ -596,15 +630,23 @@ def extract_final_features(args):
                 "text_emb": metadata_emb.tolist(),
             }
             results.append(result)
+            new_count += 1
+            consecutive_errors = 0
 
             if len(results) % args.save_every == 0:
                 save_results(results, args.out)
         except Exception as exc:
             errors += 1
+            consecutive_errors += 1
             tqdm.write(f"Error {item.video_id}: {exc}")
+            if consecutive_errors >= args.max_errors_before_abort:
+                raise RuntimeError(
+                    f"Aborting after {consecutive_errors} consecutive feature extraction errors. "
+                    "Fix the first repeated error before running the full job."
+                ) from exc
             if new_count == 0 and errors >= args.max_errors_before_abort:
                 raise RuntimeError(
-                    f"Aborting after {errors} consecutive feature extraction errors and 0 successes. "
+                    f"Aborting after {errors} feature extraction errors and 0 successes. "
                     "Fix the first repeated error before running the full job."
                 ) from exc
 
@@ -630,7 +672,9 @@ def main():
     parser.add_argument("--clip-model", default="openai/clip-vit-base-patch16")
     parser.add_argument("--text-model", default="sentence-transformers/sentence-t5-base")
     parser.add_argument("--qwen-model", default="Qwen/Qwen2.5-VL-3B-Instruct")
+    parser.add_argument("--qwen-device", default=QWEN_DEVICE)
     parser.add_argument("--dover-csv", default=None, help="Precomputed DOVER CSV. Missing means neutral quality scores.")
+    parser.add_argument("--strict-qwen", action="store_true", help="Abort immediately if Qwen captioning fails.")
     parser.add_argument("--skip-qwen", action="store_true")
     parser.add_argument("--skip-audio", action="store_true")
     parser.add_argument("--skip-motion", action="store_true")
