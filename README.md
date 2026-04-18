@@ -103,6 +103,16 @@ results/final_1000/final_experiment_report.json
 
 The report includes PLCC, SRCC, KRCC, MSE, MAE, and `final_score = 0.6 * SRCC + 0.4 * PLCC`.
 
+## Run on Kaggle from GitHub
+
+Create a GitHub repo named `snapugc-lightkd`, push this repository, then run `notebooks/kaggle_final_1000.ipynb`. The first notebook cell clones:
+
+```bash
+git clone https://github.com/TranTop2806/snapugc-lightkd.git /kaggle/working/SnapUGC-LightKD
+```
+
+Update `GITHUB_REPO` in the notebook if the GitHub URL is different.
+
 ## Kaggle
 
 Use `notebooks/kaggle_final_1000.ipynb`. It runs DOVER, extracts 1000 videos, trains Teacher/Student/KD, and zips the outputs.
