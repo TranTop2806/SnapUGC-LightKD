@@ -382,25 +382,93 @@ class QwenCaptioner:
         return caption, rationale, events
 
 
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".webm", ".avi")
+
+
+def find_first_column(df: pd.DataFrame, names: Sequence[str]) -> Optional[str]:
+    lowered = {str(c).lower(): c for c in df.columns}
+    for name in names:
+        if name.lower() in lowered:
+            return lowered[name.lower()]
+    for col in df.columns:
+        low = str(col).lower()
+        if any(name.lower() in low for name in names):
+            return col
+    return None
+
+
+def build_video_index(video_dir: str) -> Dict[str, str]:
+    """Recursively index videos by filename stem and filename for Kaggle layout variants."""
+    index: Dict[str, str] = {}
+    for root, _, files in os.walk(video_dir):
+        for filename in files:
+            if not filename.lower().endswith(VIDEO_EXTENSIONS):
+                continue
+            path = os.path.join(root, filename)
+            stem = os.path.splitext(filename)[0]
+            index.setdefault(stem, path)
+            index.setdefault(filename, path)
+    return index
+
+
 def build_work(csv_path: str, video_dir: str, max_videos: int, existing_ids: set) -> List[VideoItem]:
     df = pd.read_csv(csv_path)
+    id_col = find_first_column(df, ["Id", "video_id", "videoid", "uid"])
+    ecr_col = find_first_column(df, ["ECR", "engagement", "label", "target"])
+    title_col = find_first_column(df, ["Title", "title"])
+    desc_col = find_first_column(df, ["Description", "description", "desc"])
+    hashtag_col = find_first_column(df, ["Hashtags", "hashtags", "hashtag"])
+    path_col = find_first_column(df, ["video_path", "path", "filename", "file", "video"])
+
+    print(f"CSV columns: {list(df.columns)}")
+    print(f"Using columns: id={id_col}, ecr={ecr_col}, title={title_col}, description={desc_col}")
+
+    if id_col is None:
+        raise ValueError("Could not find video id column in CSV.")
+    if ecr_col is None:
+        raise ValueError("Could not find ECR/target column in CSV.")
+
+    video_index = build_video_index(video_dir)
+    print(f"Video directory: {video_dir}")
+    print(f"Indexed videos: {len(set(video_index.values()))}")
+    if video_index:
+        print(f"Sample indexed video: {next(iter(video_index.values()))}")
+
     items = []
+    missing_examples = []
     for _, row in df.iterrows():
-        video_id = str(row.get("Id", row.get("id", "")))
+        video_id = str(row.get(id_col, "")).strip()
         if not video_id or video_id in existing_ids:
             continue
-        video_path = os.path.join(video_dir, f"{video_id}.mp4")
-        if not os.path.exists(video_path):
+        video_path = video_index.get(video_id) or video_index.get(f"{video_id}.mp4")
+        if video_path is None and path_col is not None and pd.notna(row.get(path_col)):
+            raw_path = str(row.get(path_col)).strip()
+            candidates = [
+                raw_path,
+                os.path.join(video_dir, raw_path),
+                os.path.join(video_dir, os.path.basename(raw_path)),
+            ]
+            for candidate in candidates:
+                if os.path.exists(candidate):
+                    video_path = candidate
+                    break
+            if video_path is None:
+                video_path = video_index.get(os.path.splitext(os.path.basename(raw_path))[0])
+        if video_path is None:
+            if len(missing_examples) < 5:
+                missing_examples.append(video_id)
             continue
-        ecr = safe_float(row.get("ECR"), None)
+        ecr = safe_float(row.get(ecr_col), None)
         if ecr is None:
             continue
-        title = str(row.get("Title", "")) if pd.notna(row.get("Title", "")) else ""
-        description = str(row.get("Description", "")) if pd.notna(row.get("Description", "")) else ""
-        hashtags = str(row.get("Hashtags", "")) if pd.notna(row.get("Hashtags", "")) else ""
+        title = str(row.get(title_col, "")) if title_col and pd.notna(row.get(title_col, "")) else ""
+        description = str(row.get(desc_col, "")) if desc_col and pd.notna(row.get(desc_col, "")) else ""
+        hashtags = str(row.get(hashtag_col, "")) if hashtag_col and pd.notna(row.get(hashtag_col, "")) else ""
         items.append(VideoItem(video_id, video_path, ecr, title, description, hashtags))
         if len(items) >= max_videos:
             break
+    if missing_examples:
+        print(f"Missing video examples from CSV ids: {missing_examples}")
     return items
 
 
@@ -425,7 +493,7 @@ def save_results(results: List[Dict], path: str):
 
 def extract_final_features(args):
     print("=" * 80)
-    print("Final Feature Extraction | Distil-ShortVU")
+    print("Final Feature Extraction | SnapUGC-LightKD")
     print(f"Device: {DEVICE} | Max videos: {args.max}")
     print("=" * 80)
 
@@ -434,8 +502,12 @@ def extract_final_features(args):
     work = build_work(args.csv, args.videos, args.max, existing_ids)
     print(f"Existing: {len(existing)} | To process: {len(work)}")
     if not work:
-        save_results(existing, args.out)
-        return existing
+        if existing:
+            save_results(existing, args.out)
+            return existing
+        raise RuntimeError(
+            "No videos matched the CSV. Check --csv, --videos, and printed CSV/video diagnostics."
+        )
 
     reader = VideoReaderHelper()
     clip = CLIPFrameExtractor(args.clip_model)
