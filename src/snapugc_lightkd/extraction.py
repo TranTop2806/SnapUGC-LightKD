@@ -119,7 +119,16 @@ class CLIPFrameExtractor:
             return np.zeros((0, 512), dtype=np.float32)
         inputs = self.processor(images=list(frames), return_tensors="pt")
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
-        feats = self.model.get_image_features(**inputs).detach().cpu().float().numpy()
+        output = self.model.get_image_features(**inputs)
+        if hasattr(output, "image_embeds"):
+            output = output.image_embeds
+        elif hasattr(output, "pooler_output"):
+            output = output.pooler_output
+        elif hasattr(output, "last_hidden_state"):
+            output = output.last_hidden_state[:, 0]
+        if not torch.is_tensor(output):
+            raise TypeError(f"Unexpected CLIP output type: {type(output)}")
+        feats = output.detach().cpu().float().numpy()
         return l2_normalize(feats).astype(np.float32)
 
     def unload(self):
@@ -593,6 +602,11 @@ def extract_final_features(args):
         except Exception as exc:
             errors += 1
             tqdm.write(f"Error {item.video_id}: {exc}")
+            if new_count == 0 and errors >= args.max_errors_before_abort:
+                raise RuntimeError(
+                    f"Aborting after {errors} consecutive feature extraction errors and 0 successes. "
+                    "Fix the first repeated error before running the full job."
+                ) from exc
 
     save_results(results, args.out)
     elapsed = (time.time() - t0) / 60.0
@@ -608,6 +622,7 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--max", type=int, default=1000)
     parser.add_argument("--save-every", type=int, default=25)
+    parser.add_argument("--max-errors-before-abort", type=int, default=20)
     parser.add_argument("--num-frames", type=int, default=16)
     parser.add_argument("--motion-clips", type=int, default=4)
     parser.add_argument("--motion-frames", type=int, default=16)
