@@ -201,9 +201,9 @@ class DoverScoreLookup:
                 vid = str(row[id_col])
                 vid = os.path.splitext(os.path.basename(vid))[0]
                 self.by_id[vid] = {
-                    "technical": self._value(row, ["technical", "tech"], 0.5),
-                    "aesthetic": self._value(row, ["aesthetic", "aes"], 0.5),
-                    "overall": self._value(row, ["overall", "quality", "score", "dover"], 0.5),
+                    "technical": self._value(row, ["technical score", "technical", "tech"], 0.5),
+                    "aesthetic": self._value(row, ["aesthetic score", "aesthetic", "aes"], 0.5),
+                    "overall": self._value(row, ["overall/final score", "overall", "final"], 0.5),
                     "found": True,
                 }
             print(f"[DOVER] loaded {len(self.by_id)} score rows from {csv_path}")

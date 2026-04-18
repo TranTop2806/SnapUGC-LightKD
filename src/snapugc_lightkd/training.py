@@ -176,6 +176,14 @@ def split_data(data, val_ratio=0.2, seed=42):
     return [data[i] for i in train_idx], [data[i] for i in val_idx]
 
 
+def is_better_metric(metrics, best_value, metric_name):
+    """Select checkpoints using the metric that matches the evaluation target."""
+    value = float(metrics[metric_name])
+    if metric_name in {"mse", "mae"}:
+        return value < best_value, value
+    return value > best_value, value
+
+
 def train_teacher_epoch(model, loader, optimizer, device):
     model.train()
     total_loss = 0.0
@@ -362,7 +370,7 @@ def run_experiment(args):
 
     optimizer = AdamW(teacher.parameters(), lr=args.teacher_lr, weight_decay=0.01)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.teacher_epochs, eta_min=1e-6)
-    best_val_loss = float('inf')
+    best_metric = float('inf') if args.selection_metric in {"mse", "mae"} else -float('inf')
     t_start = time.time()
 
     for epoch in range(1, args.teacher_epochs + 1):
@@ -373,8 +381,11 @@ def run_experiment(args):
             print(f"  Epoch {epoch:3d}: train_loss={train_loss:.5f} | "
                   f"PLCC={val_metrics['plcc']:.4f} SRCC={val_metrics['srcc']:.4f} "
                   f"Score={val_metrics['final_score']:.4f} MSE={val_metrics['mse']:.5f}")
-            if val_metrics['mse'] < best_val_loss:
-                best_val_loss = val_metrics['mse']
+            better, metric_value = is_better_metric(
+                val_metrics, best_metric, args.selection_metric
+            )
+            if better:
+                best_metric = metric_value
                 torch.save(teacher.state_dict(), os.path.join(args.save_dir, 'final_teacher_best.pth'))
 
     teacher_time = time.time() - t_start
@@ -431,7 +442,7 @@ def run_experiment(args):
     }
     optimizer = AdamW(baseline.parameters(), lr=args.student_lr, weight_decay=0.01)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.student_epochs, eta_min=1e-6)
-    best_val_loss = float('inf')
+    best_metric = float('inf') if args.selection_metric in {"mse", "mae"} else -float('inf')
     t_start = time.time()
 
     for epoch in range(1, args.student_epochs + 1):
@@ -445,8 +456,11 @@ def run_experiment(args):
             print(f"  Epoch {epoch:3d}: loss={train_metrics['loss']:.5f} | "
                   f"PLCC={val_metrics['plcc']:.4f} SRCC={val_metrics['srcc']:.4f} "
                   f"Score={val_metrics['final_score']:.4f} MSE={val_metrics['mse']:.5f}")
-            if val_metrics['mse'] < best_val_loss:
-                best_val_loss = val_metrics['mse']
+            better, metric_value = is_better_metric(
+                val_metrics, best_metric, args.selection_metric
+            )
+            if better:
+                best_metric = metric_value
                 torch.save(baseline.state_dict(), os.path.join(args.save_dir, 'final_student_baseline_best.pth'))
 
     baseline_time = time.time() - t_start
@@ -483,7 +497,7 @@ def run_experiment(args):
 
     optimizer = AdamW(student_kd.parameters(), lr=args.student_lr, weight_decay=0.01)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.student_epochs, eta_min=1e-6)
-    best_val_loss = float('inf')
+    best_metric = float('inf') if args.selection_metric in {"mse", "mae"} else -float('inf')
     t_start = time.time()
 
     for epoch in range(1, args.student_epochs + 1):
@@ -498,8 +512,11 @@ def run_experiment(args):
             print(f"  Epoch {epoch:3d}: loss={train_metrics['loss']:.5f} {kd_losses} | "
                   f"PLCC={val_metrics['plcc']:.4f} SRCC={val_metrics['srcc']:.4f} "
                   f"Score={val_metrics['final_score']:.4f} MSE={val_metrics['mse']:.5f}")
-            if val_metrics['mse'] < best_val_loss:
-                best_val_loss = val_metrics['mse']
+            better, metric_value = is_better_metric(
+                val_metrics, best_metric, args.selection_metric
+            )
+            if better:
+                best_metric = metric_value
                 torch.save(student_kd.state_dict(), os.path.join(args.save_dir, 'final_student_kd_best.pth'))
 
     kd_time = time.time() - t_start
@@ -536,6 +553,7 @@ def run_experiment(args):
         'data_path': args.data,
         'n_train': len(train_data),
         'n_val': len(val_data),
+        'selection_metric': args.selection_metric,
         'teacher': {'params': t_total, **teacher_val},
         'student_kd': {'params': s_total, **kd_val, 'kd_weights': kd_weights},
         'student_baseline': {'params': s_total, **baseline_val},
@@ -567,6 +585,12 @@ def main():
     parser.add_argument('--student-hidden', type=int, default=256)
     parser.add_argument('--student-epochs', type=int, default=60)
     parser.add_argument('--student-lr', type=float, default=5e-4)
+    parser.add_argument(
+        '--selection-metric',
+        choices=['final_score', 'srcc', 'plcc', 'mse', 'mae'],
+        default='final_score',
+        help='Validation metric used for checkpoint selection.',
+    )
 
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--batch', type=int, default=16)
