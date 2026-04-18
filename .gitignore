@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
+# Data and generated artifacts
+data/*.csv
+data/train_videos/
+data/raw/
+data/processed/
+features/
+results/*
+!results/.gitkeep
+outputs/
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.npy
+*.npz
+*.parquet
+*.jsonl
+*.zip
+
+# Kaggle/experiment generated files
+final_1000_videos/
+wandb/
+
+# Local dataset symlinks
+data/train_videos

@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snapugc-lightkd"
+version = "0.1.0"
+description = "Literature-aligned lightweight knowledge distillation for SnapUGC short-video engagement prediction."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy>=1.23,<2.0",
+  "pandas>=2.0",
+  "scipy>=1.10",
+  "torch>=2.1",
+  "torchvision>=0.16",
+  "transformers>=4.49.0",
+  "sentence-transformers>=2.7",
+  "eva-decord>=0.6.1",
+  "pillow>=10.0",
+  "tqdm>=4.60",
+  "accelerate>=0.27",
+]
+
+[project.optional-dependencies]
+extraction = [
+  "tensorflow>=2.14",
+  "tensorflow-hub>=0.16",
+  "qwen-vl-utils>=0.0.8",
+  "av>=12.0",
+]
+notebook = ["jupyter", "matplotlib"]
+
+[project.scripts]
+snapugc-extract = "snapugc_lightkd.extraction:main"
+snapugc-train = "snapugc_lightkd.training:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
