@@ -46,14 +46,30 @@ If installing PyTorch manually for Kaggle/CUDA, install the matching wheel first
 
 ## Feature Extraction
 
-First run, 1000 videos:
+Build a bounded subset with stratified ECR sampling before extracting features.
+Do not take the first `N` CSV rows for validation-style runs because the source
+CSV order can heavily bias the ECR range.
+
+```bash
+python scripts/make_subset.py \
+  --csv data/train_data.csv \
+  --videos data/train_videos \
+  --out-csv data/train_subset_2000.csv \
+  --out-videos data/subset_videos_2000 \
+  --max 2000 \
+  --bins 10 \
+  --seed 42 \
+  --reset
+```
+
+First bounded run:
 
 ```bash
 python scripts/extract_features.py \
-  --csv data/train_data.csv \
-  --videos data/train_videos \
-  --out features/features_final_1000.json \
-  --max 1000 \
+  --csv data/train_subset_2000.csv \
+  --videos data/subset_videos_2000 \
+  --out features/features_final_2000.json \
+  --max 2000 \
   --dover-csv path/to/dover_scores.csv
 ```
 
@@ -99,6 +115,11 @@ results/final_1000/final_teacher_best.pth
 results/final_1000/final_student_baseline_best.pth
 results/final_1000/final_student_kd_best.pth
 results/final_1000/final_experiment_report.json
+results/final_1000/train_metrics.csv
+results/final_1000/diagnostic_ecr_distribution.png
+results/final_1000/diagnostic_ecr_quantiles.png
+results/final_1000/diagnostic_dover_vs_ecr.png
+results/final_1000/diagnostic_train_metrics.png
 ```
 
 The report includes PLCC, SRCC, KRCC, MSE, MAE, and `final_score = 0.6 * SRCC + 0.4 * PLCC`.
@@ -115,4 +136,4 @@ Update `GITHUB_REPO` in the notebook if the GitHub URL is different.
 
 ## Kaggle
 
-Use `notebooks/kaggle_final_1000.ipynb`. Despite the legacy filename, it now defaults to a 2000-video run with DOVER-Mobile and BLIP-base captioning, then trains Teacher/Student/KD and zips the outputs. Lower `MAX_VIDEOS` only for debugging.
+Use `notebooks/kaggle_final_1000.ipynb`. Despite the legacy filename, it now defaults to a 2000-video run with an ECR-stratified subset, DOVER-Mobile, and BLIP-base captioning, then trains Teacher/Student/KD and zips the outputs. The zip includes reports, checkpoints, features, subset CSV, DOVER CSV, and diagnostics, but intentionally excludes `subset_videos/` to keep downloads small. Lower `MAX_VIDEOS` only for debugging.
