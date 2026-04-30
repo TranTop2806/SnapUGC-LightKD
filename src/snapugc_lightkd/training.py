@@ -10,6 +10,7 @@ Pipeline:
 """
 
 import argparse
+import inspect
 import json
 import os
 import time
@@ -29,7 +30,8 @@ class KDDataset(Dataset):
     """Dataset for the final paper-aligned temporal KD schema."""
 
     def __init__(self, data_list, max_frames=16, max_motion_clips=4,
-                 clip_dim=512, motion_dim=512, audio_dim=1024, text_dim=768):
+                 clip_dim=512, motion_dim=512, audio_dim=1024, text_dim=768,
+                 audio_probs_dim=521, numeric_dim=8, opening_seconds=None):
         self.data = data_list
         self.max_frames = max_frames
         self.max_motion_clips = max_motion_clips
@@ -37,6 +39,9 @@ class KDDataset(Dataset):
         self.motion_dim = motion_dim
         self.audio_dim = audio_dim
         self.text_dim = text_dim
+        self.audio_probs_dim = audio_probs_dim
+        self.numeric_dim = numeric_dim
+        self.opening_seconds = opening_seconds
 
     def __len__(self):
         return len(self.data)
@@ -84,6 +89,47 @@ class KDDataset(Dataset):
             mask[:length] = True
         return torch.tensor(out, dtype=torch.float32), torch.tensor(mask, dtype=torch.bool)
 
+    @staticmethod
+    def _apply_opening_window(tokens, mask, duration, opening_seconds):
+        if opening_seconds is None:
+            return tokens, mask
+        try:
+            duration = float(duration)
+            opening_seconds = float(opening_seconds)
+        except (TypeError, ValueError):
+            return tokens, mask
+        if duration <= opening_seconds or duration <= 0 or opening_seconds <= 0:
+            return tokens, mask
+
+        keep = int(np.ceil(tokens.shape[0] * min(opening_seconds, duration) / duration))
+        keep = max(1, min(int(tokens.shape[0]), keep))
+        tokens = tokens.clone()
+        mask = mask.clone()
+        tokens[keep:] = 0.0
+        mask[keep:] = False
+        return tokens, mask
+
+    @staticmethod
+    def _numeric_features(item):
+        duration = float(item.get('duration') or 0.0)
+        fps = float(item.get('fps') or 0.0)
+        width = float(item.get('width') or 0.0)
+        height = float(item.get('height') or 0.0)
+        aspect = width / height if height > 0 else 0.0
+        text_len = len(str(item.get('title') or '')) + len(str(item.get('description') or ''))
+        pixels = max(width * height, 1.0)
+        values = [
+            min(duration / 60.0, 1.0),
+            min(fps / 60.0, 1.0),
+            min(width / 1080.0, 1.0),
+            min(height / 1920.0, 1.0),
+            min(aspect / 2.0, 1.0),
+            1.0 if height > width and height > 0 else 0.0,
+            min(np.log(pixels) / 14.0, 1.0),
+            min(text_len / 500.0, 1.0),
+        ]
+        return torch.tensor(values, dtype=torch.float32)
+
     def __getitem__(self, idx):
         item = self.data[idx]
 
@@ -100,6 +146,10 @@ class KDDataset(Dataset):
 
         clip_frames, clip_mask = self._as_sequence(clip_value, self.max_frames, self.clip_dim)
         motion_clips, motion_mask = self._as_sequence(motion_value, self.max_motion_clips, self.motion_dim)
+        clip_frames, clip_mask = self._apply_opening_window(
+            clip_frames, clip_mask, item.get('duration'), self.opening_seconds)
+        motion_clips, motion_mask = self._apply_opening_window(
+            motion_clips, motion_mask, item.get('duration'), self.opening_seconds)
 
         aesthetic = self._quality_value(item, ['aesthetic', 'aesthetic_score'], 0.5)
         technical = self._quality_value(item, ['technical', 'technical_score'], 0.5)
@@ -111,10 +161,12 @@ class KDDataset(Dataset):
             'motion_clips': motion_clips,
             'motion_mask': motion_mask,
             'audio_emb': self._as_vector(audio_value, self.audio_dim),
+            'audio_probs': self._as_vector(item.get('yamnet_class_probs'), self.audio_probs_dim),
             'text_emb': self._as_vector(text_value, self.text_dim),
             'caption_emb': self._as_vector(caption_value, self.text_dim),
             'rationale_emb': self._as_vector(rationale_value, self.text_dim),
             'quality_scores': torch.tensor([technical, aesthetic, overall], dtype=torch.float32),
+            'numeric_features': self._numeric_features(item),
             'ecr': torch.tensor(item.get('ecr', 0.0) or 0.0, dtype=torch.float32),
             'aesthetic': torch.tensor(aesthetic, dtype=torch.float32),
             'technical': torch.tensor(technical, dtype=torch.float32),
@@ -174,6 +226,16 @@ def split_data(data, val_ratio=0.2, seed=42):
     split = int(n * (1 - val_ratio))
     train_idx, val_idx = indices[:split], indices[split:]
     return [data[i] for i in train_idx], [data[i] for i in val_idx]
+
+
+def add_optional_model_inputs(model, kwargs, batch, device):
+    """Pass richer extracted features only to models that declare them."""
+    accepted = inspect.signature(model.forward).parameters
+    if 'audio_probs' in accepted and 'audio_probs' in batch:
+        kwargs['audio_probs'] = batch['audio_probs'].to(device)
+    if 'numeric_features' in accepted and 'numeric_features' in batch:
+        kwargs['numeric_features'] = batch['numeric_features'].to(device)
+    return kwargs
 
 
 def is_better_metric(metrics, best_value, metric_name):
@@ -259,15 +321,17 @@ def evaluate_model(model, loader, device, model_type='teacher'):
     for batch in loader:
         if model_type == 'teacher':
             out = model(
-                clip_frames=batch['clip_frames'].to(device),
-                clip_mask=batch['clip_mask'].to(device),
-                motion_clips=batch['motion_clips'].to(device),
-                motion_mask=batch['motion_mask'].to(device),
-                audio_emb=batch['audio_emb'].to(device),
-                text_emb=batch['text_emb'].to(device),
-                caption_emb=batch['caption_emb'].to(device),
-                rationale_emb=batch['rationale_emb'].to(device),
-                quality_scores=batch['quality_scores'].to(device),
+                **add_optional_model_inputs(model, {
+                    'clip_frames': batch['clip_frames'].to(device),
+                    'clip_mask': batch['clip_mask'].to(device),
+                    'motion_clips': batch['motion_clips'].to(device),
+                    'motion_mask': batch['motion_mask'].to(device),
+                    'audio_emb': batch['audio_emb'].to(device),
+                    'text_emb': batch['text_emb'].to(device),
+                    'caption_emb': batch['caption_emb'].to(device),
+                    'rationale_emb': batch['rationale_emb'].to(device),
+                    'quality_scores': batch['quality_scores'].to(device),
+                }, batch, device)
             )
         else:
             out = model(

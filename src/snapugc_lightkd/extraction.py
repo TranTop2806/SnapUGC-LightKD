@@ -57,7 +57,24 @@ def safe_float(value, default=None):
 
 
 class VideoReaderHelper:
-    def read_frames(self, video_path: str, num_frames: int) -> Tuple[List[Image.Image], Dict]:
+    @staticmethod
+    def _window_frame_count(total: int, fps: float, opening_seconds: Optional[float]) -> int:
+        if opening_seconds is None:
+            return total
+        try:
+            opening_seconds = float(opening_seconds)
+        except (TypeError, ValueError):
+            return total
+        if opening_seconds <= 0 or fps <= 0:
+            return total
+        return max(1, min(total, int(np.ceil(opening_seconds * fps))))
+
+    def read_frames(
+        self,
+        video_path: str,
+        num_frames: int,
+        opening_seconds: Optional[float] = None,
+    ) -> Tuple[List[Image.Image], Dict]:
         from decord import VideoReader, cpu
 
         vr = VideoReader(video_path, ctx=cpu(0))
@@ -65,28 +82,39 @@ class VideoReaderHelper:
         if total <= 0:
             return [], {"num_frames": 0, "fps": 0.0, "duration": 0.0, "width": 0, "height": 0}
 
-        indices = np.linspace(0, total - 1, num_frames, dtype=int)
+        fps = float(vr.get_avg_fps() or 0.0)
+        window_total = self._window_frame_count(total, fps, opening_seconds)
+        indices = np.linspace(0, window_total - 1, num_frames, dtype=int)
         frames = vr.get_batch(indices).asnumpy()
         pil_frames = [Image.fromarray(frame) for frame in frames]
-        fps = float(vr.get_avg_fps() or 0.0)
         h, w = frames[0].shape[:2]
         duration = float(total / fps) if fps > 0 else 0.0
         meta = {
             "num_frames": int(total),
+            "feature_num_frames": int(window_total),
             "fps": fps,
             "duration": duration,
+            "feature_window_seconds": float(opening_seconds) if opening_seconds is not None else duration,
             "width": int(w),
             "height": int(h),
         }
         return pil_frames, meta
 
-    def read_motion_clips(self, video_path: str, num_clips: int, frames_per_clip: int) -> List[np.ndarray]:
+    def read_motion_clips(
+        self,
+        video_path: str,
+        num_clips: int,
+        frames_per_clip: int,
+        opening_seconds: Optional[float] = None,
+    ) -> List[np.ndarray]:
         from decord import VideoReader, cpu
 
         vr = VideoReader(video_path, ctx=cpu(0))
         total = len(vr)
         if total <= 0:
             return []
+        fps = float(vr.get_avg_fps() or 0.0)
+        total = self._window_frame_count(total, fps, opening_seconds)
 
         if total < frames_per_clip:
             base = np.linspace(0, total - 1, frames_per_clip, dtype=int)
@@ -565,14 +593,23 @@ def extract_final_features(args):
 
     for item in tqdm(work, desc="Extract final features", unit="video"):
         try:
-            frames, meta = reader.read_frames(item.video_path, args.num_frames)
+            frames, meta = reader.read_frames(
+                item.video_path,
+                args.num_frames,
+                opening_seconds=args.opening_seconds,
+            )
             if not frames:
                 raise RuntimeError("empty video")
 
             clip_frames = clip.encode(frames)
             motion_feats = np.zeros((0, 512), dtype=np.float32)
             if motion is not None:
-                clips = reader.read_motion_clips(item.video_path, args.motion_clips, args.motion_frames)
+                clips = reader.read_motion_clips(
+                    item.video_path,
+                    args.motion_clips,
+                    args.motion_frames,
+                    opening_seconds=args.opening_seconds,
+                )
                 motion_feats = motion.encode(clips)
 
             caption_text, frame_captions = captioner.caption(frames, args.caption_frames)
@@ -598,6 +635,8 @@ def extract_final_features(args):
                 "fps": meta.get("fps", 0.0),
                 "width": meta.get("width", 0),
                 "height": meta.get("height", 0),
+                "feature_num_frames": meta.get("feature_num_frames", 0),
+                "feature_window_seconds": meta.get("feature_window_seconds", 0.0),
                 "ecr": item.ecr,
                 "title": item.title,
                 "description": item.description,
@@ -666,6 +705,12 @@ def main():
     parser.add_argument("--num-frames", type=int, default=16)
     parser.add_argument("--motion-clips", type=int, default=4)
     parser.add_argument("--motion-frames", type=int, default=16)
+    parser.add_argument(
+        "--opening-seconds",
+        type=float,
+        default=None,
+        help="Sample visual and motion tokens only from the first N seconds.",
+    )
     parser.add_argument("--caption-frames", type=int, default=3)
     parser.add_argument("--clip-model", default="openai/clip-vit-base-patch16")
     parser.add_argument("--text-model", default="sentence-transformers/sentence-t5-base")
