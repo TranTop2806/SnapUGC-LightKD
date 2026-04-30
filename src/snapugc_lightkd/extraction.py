@@ -14,6 +14,7 @@ smoke-test locally when heavy dependencies are unavailable.
 """
 
 import argparse
+import contextlib
 import gc
 import json
 import os
@@ -346,7 +347,7 @@ class YAMNetExtractor:
 
 
 class SentenceT5Encoder:
-    def __init__(self, model_id="sentence-transformers/sentence-t5-base", device=DEVICE):
+    def __init__(self, model_id="sentence-transformers/sentence-t5-base", device="cpu"):
         from sentence_transformers import SentenceTransformer
 
         print(f"[Text] loading {model_id} on {device}", flush=True)
@@ -561,6 +562,22 @@ def save_results(results: List[Dict], path: str):
 
 
 def extract_final_features(args):
+    lock_handle = None
+    if args.lock_file:
+        try:
+            import fcntl
+
+            os.makedirs(os.path.dirname(args.lock_file) or ".", exist_ok=True)
+            lock_handle = open(args.lock_file, "w", encoding="utf-8")
+            fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_handle.write(str(os.getpid()))
+            lock_handle.flush()
+        except BlockingIOError as exc:
+            raise RuntimeError(
+                f"Another extract_features.py process is already running. "
+                f"Lock file: {args.lock_file}. Stop that cell/process before retrying."
+            ) from exc
+
     print("=" * 80)
     print("Final Feature Extraction | SnapUGC-LightKD")
     print(f"Device: {DEVICE} | Caption device: {args.caption_device} | Max videos: {args.max}")
@@ -584,7 +601,7 @@ def extract_final_features(args):
     motion = None if args.skip_motion else MotionExtractor()
     dover = DoverScoreLookup(args.dover_csv)
     yamnet = None if args.skip_audio else YAMNetExtractor()
-    text_encoder = SentenceT5Encoder(args.text_model)
+    text_encoder = SentenceT5Encoder(args.text_model, device=args.text_device)
     captioner = BLIPCaptioner(
         args.caption_model,
         device=args.caption_device,
@@ -698,6 +715,9 @@ def extract_final_features(args):
     elapsed = (time.time() - t0) / 60.0
     print(f"Done. Total: {len(results)} | New errors: {errors} | Time: {elapsed:.1f} min")
     print(f"Output: {args.out}")
+    if lock_handle is not None:
+        with contextlib.suppress(Exception):
+            lock_handle.close()
     return results
 
 
@@ -721,6 +741,11 @@ def main():
     parser.add_argument("--caption-frames", type=int, default=3)
     parser.add_argument("--clip-model", default="openai/clip-vit-base-patch16")
     parser.add_argument("--text-model", default="sentence-transformers/sentence-t5-base")
+    parser.add_argument(
+        "--text-device",
+        default="cpu",
+        help="Device for Sentence-T5 text embeddings. CPU is safer with CLIP/Motion/BLIP on GPU.",
+    )
     parser.add_argument("--caption-model", default="Salesforce/blip-image-captioning-base")
     parser.add_argument("--caption-device", default=DEVICE)
     parser.add_argument("--dover-csv", default=None, help="Precomputed DOVER CSV. Missing means neutral quality scores.")
@@ -728,6 +753,11 @@ def main():
     parser.add_argument("--skip-caption", action="store_true")
     parser.add_argument("--skip-audio", action="store_true")
     parser.add_argument("--skip-motion", action="store_true")
+    parser.add_argument(
+        "--lock-file",
+        default=None,
+        help="Optional non-blocking process lock to prevent duplicate extraction jobs.",
+    )
     args = parser.parse_args()
     extract_final_features(args)
 
