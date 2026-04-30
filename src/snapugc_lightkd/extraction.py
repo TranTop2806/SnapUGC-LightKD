@@ -17,6 +17,7 @@ import argparse
 import gc
 import json
 import os
+import sys
 import subprocess
 import tempfile
 import time
@@ -138,9 +139,10 @@ class CLIPFrameExtractor:
         from transformers import CLIPModel, CLIPProcessor
 
         self.device = device
+        print(f"[CLIP] loading {model_id} on {device}", flush=True)
         self.processor = CLIPProcessor.from_pretrained(model_id)
         self.model = CLIPModel.from_pretrained(model_id).to(device).eval()
-        print(f"[CLIP] loaded {model_id} on {device}")
+        print(f"[CLIP] loaded {model_id} on {device}", flush=True)
 
     @torch.no_grad()
     def encode(self, frames: Sequence[Image.Image]) -> np.ndarray:
@@ -173,12 +175,13 @@ class MotionExtractor:
 
         self.device = device
         weights = R2Plus1D_18_Weights.KINETICS400_V1
+        print(f"[Motion] loading R(2+1)D-18 Kinetics-400 on {device}", flush=True)
         self.model = r2plus1d_18(weights=weights)
         self.model.fc = torch.nn.Identity()
         self.model = self.model.to(device).eval()
         self.mean = torch.tensor([0.43216, 0.394666, 0.37645]).view(1, 3, 1, 1, 1)
         self.std = torch.tensor([0.22803, 0.22145, 0.216989]).view(1, 3, 1, 1, 1)
-        print(f"[Motion] R(2+1)D-18 Kinetics-400 loaded on {device}")
+        print(f"[Motion] R(2+1)D-18 Kinetics-400 loaded on {device}", flush=True)
 
     def _preprocess_clip(self, clip: np.ndarray) -> torch.Tensor:
         import torch.nn.functional as F
@@ -289,9 +292,9 @@ class YAMNetExtractor:
             class_map = self.model.class_map_path().numpy().decode("utf-8")
             self.class_names = pd.read_csv(class_map)["display_name"].tolist()
             self.available = True
-            print("[YAMNet] loaded from TensorFlow Hub")
+            print("[YAMNet] loaded from TensorFlow Hub", flush=True)
         except Exception as exc:
-            print(f"[YAMNet] unavailable ({exc}); using zeros")
+            print(f"[YAMNet] unavailable ({exc}); using zeros", flush=True)
             self.available = False
             self.model = None
             self.class_names = []
@@ -346,9 +349,10 @@ class SentenceT5Encoder:
     def __init__(self, model_id="sentence-transformers/sentence-t5-base", device=DEVICE):
         from sentence_transformers import SentenceTransformer
 
+        print(f"[Text] loading {model_id} on {device}", flush=True)
         self.model = SentenceTransformer(model_id, device=device)
         self.dim = self.model.get_sentence_embedding_dimension()
-        print(f"[Text] loaded {model_id} ({self.dim}d)")
+        print(f"[Text] loaded {model_id} ({self.dim}d)", flush=True)
 
     def encode(self, text: str) -> np.ndarray:
         if not text or not text.strip():
@@ -370,20 +374,22 @@ class BLIPCaptioner:
         self.strict = strict
         self.device = device
         if not enabled:
-            print("[BLIP] disabled")
+            print("[BLIP] disabled", flush=True)
             return
         try:
             from transformers import BlipForConditionalGeneration, BlipProcessor
 
+            print(f"[BLIP] loading processor {model_id}", flush=True)
             self.processor = BlipProcessor.from_pretrained(model_id)
+            print(f"[BLIP] loading model {model_id} on {device}", flush=True)
             self.model = BlipForConditionalGeneration.from_pretrained(model_id).to(device).eval()
             self.available = True
-            print(f"[BLIP] loaded {model_id} on {device}")
+            print(f"[BLIP] loaded {model_id} on {device}", flush=True)
         except Exception as exc:
             message = f"[BLIP] unavailable ({exc}); captions will be empty"
             if strict:
                 raise RuntimeError(message) from exc
-            print(message)
+            print(message, flush=True)
 
     @torch.no_grad()
     def caption(self, frames: Sequence[Image.Image], num_frames: int = 3) -> Tuple[str, List[str]]:
@@ -558,6 +564,7 @@ def extract_final_features(args):
     print("=" * 80)
     print("Final Feature Extraction | SnapUGC-LightKD")
     print(f"Device: {DEVICE} | Caption device: {args.caption_device} | Max videos: {args.max}")
+    print(f"PID: {os.getpid()} | Python: {sys.executable}")
     print("=" * 80)
 
     existing = load_existing(args.out)
