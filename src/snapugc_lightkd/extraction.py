@@ -563,6 +563,8 @@ def save_results(results: List[Dict], path: str):
 
 def extract_final_features(args):
     lock_handle = None
+    if args.lock_file is None:
+        args.lock_file = f"{args.out}.lock"
     if args.lock_file:
         try:
             import fcntl
