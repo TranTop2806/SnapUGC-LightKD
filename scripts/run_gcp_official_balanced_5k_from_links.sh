@@ -6,6 +6,8 @@ SUBSET_CSV="${SUBSET_CSV:-/workspace/snapugc-data/train_subset_balanced_5000.csv
 VIDEO_DIR="${VIDEO_DIR:-/workspace/snapugc-data/train_videos_balanced_5000}"
 OUT_DIR="${OUT_DIR:-/workspace/results/original_snapugc_official_balanced_5000}"
 LOG_FILE="${LOG_FILE:-${OUT_DIR}/run_from_links.log}"
+RESET_LOG="${RESET_LOG:-0}"
+RESUME_PREDICTIONS="${RESUME_PREDICTIONS:-}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-/workspace/snapugc-checkpoints}"
 OFFICIAL_REPO_DIR="${OFFICIAL_REPO_DIR:-/workspace/SnapUGC_Engagement}"
 WORKERS="${SNAPUGC_LINK_WORKERS:-16}"
@@ -13,11 +15,14 @@ KAGGLE_WORKERS="${SNAPUGC_KAGGLE_WORKERS:-4}"
 KAGGLE_NETRC="${KAGGLE_NETRC:-/workspace/kaggle.netrc}"
 PYTHON_BIN="${PYTHON_BIN:-${ROOT_DIR}/.venv/bin/python}"
 SHUTDOWN_ON_EXIT="${SHUTDOWN_ON_EXIT:-1}"
-export ROOT_DIR SUBSET_CSV VIDEO_DIR OUT_DIR LOG_FILE CHECKPOINT_DIR OFFICIAL_REPO_DIR WORKERS KAGGLE_WORKERS KAGGLE_NETRC
+export ROOT_DIR SUBSET_CSV VIDEO_DIR OUT_DIR LOG_FILE RESET_LOG RESUME_PREDICTIONS CHECKPOINT_DIR OFFICIAL_REPO_DIR WORKERS KAGGLE_WORKERS KAGGLE_NETRC
 export SNAPUGC_LINK_WORKERS="$WORKERS"
 export SNAPUGC_KAGGLE_WORKERS="$KAGGLE_WORKERS"
 
 mkdir -p "$VIDEO_DIR" "$OUT_DIR" "$(dirname "$LOG_FILE")"
+if [[ "$RESET_LOG" == "1" ]]; then
+  rm -f "$LOG_FILE"
+fi
 
 shutdown_vm() {
   local status=$?
@@ -37,6 +42,8 @@ echo "ROOT_DIR=$ROOT_DIR"
 echo "SUBSET_CSV=$SUBSET_CSV"
 echo "VIDEO_DIR=$VIDEO_DIR"
 echo "OUT_DIR=$OUT_DIR"
+echo "LOG_FILE=$LOG_FILE"
+echo "RESUME_PREDICTIONS=${RESUME_PREDICTIONS:-<none>}"
 echo "LINK_WORKERS=$WORKERS"
 echo "KAGGLE_WORKERS=$KAGGLE_WORKERS"
 
@@ -292,6 +299,48 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 export SNAPUGC_OFFICIAL_FRAME_BATCH="${SNAPUGC_OFFICIAL_FRAME_BATCH:-12}"
 
+RUN_CSV="$SUBSET_CSV"
+MONITOR_SEED_ARGS=()
+if [[ -n "$RESUME_PREDICTIONS" ]]; then
+  if [[ ! -s "$RESUME_PREDICTIONS" ]]; then
+    echo "RESUME_PREDICTIONS file does not exist or is empty: $RESUME_PREDICTIONS"
+    exit 4
+  fi
+  RUN_CSV="${OUT_DIR}/resume_remaining_after_seed.csv"
+  export RUN_CSV
+  "$PYTHON_BIN" - <<'PY'
+import csv
+import os
+from pathlib import Path
+
+subset_csv = Path(os.environ["SUBSET_CSV"])
+seed_csv = Path(os.environ["RESUME_PREDICTIONS"])
+run_csv = Path(os.environ["RUN_CSV"])
+
+with seed_csv.open("r", encoding="utf-8", newline="") as f:
+    seed_ids = {str(row["Id"]) for row in csv.DictReader(f)}
+
+with subset_csv.open("r", encoding="utf-8", newline="") as f:
+    reader = csv.DictReader(f)
+    fieldnames = reader.fieldnames
+    if not fieldnames:
+        raise ValueError(f"Empty CSV: {subset_csv}")
+    remaining = [row for row in reader if str(row["Id"]) not in seed_ids]
+
+run_csv.parent.mkdir(parents=True, exist_ok=True)
+with run_csv.open("w", encoding="utf-8", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(remaining)
+
+print(
+    f"resume_seed={len(seed_ids)} remaining_rows={len(remaining)} run_csv={run_csv}",
+    flush=True,
+)
+PY
+  MONITOR_SEED_ARGS=(--seed-predictions "$RESUME_PREDICTIONS")
+fi
+
 "$PYTHON_BIN" scripts/monitor_gcp_official_partial.py \
   --log "$LOG_FILE" \
   --labels-csv "$SUBSET_CSV" \
@@ -299,6 +348,7 @@ export SNAPUGC_OFFICIAL_FRAME_BATCH="${SNAPUGC_OFFICIAL_FRAME_BATCH:-12}"
   --target-n 5000 \
   --every-n 500 \
   --poll-seconds 60 \
+  "${MONITOR_SEED_ARGS[@]}" \
   --no-stop > "${OUT_DIR}/monitor_every_500.log" 2>&1 &
 MONITOR_PID=$!
 echo "Started partial monitor pid=${MONITOR_PID}"
@@ -306,7 +356,7 @@ echo "Started partial monitor pid=${MONITOR_PID}"
 "$PYTHON_BIN" scripts/run_official_snapugc_evqa.py \
   --official-repo-dir "$OFFICIAL_REPO_DIR" \
   --videos-dir "$VIDEO_DIR" \
-  --csv-file "$SUBSET_CSV" \
+  --csv-file "$RUN_CSV" \
   --out-dir "$OUT_DIR" \
   --python "$PYTHON_BIN"
 

@@ -47,6 +47,46 @@ def parse_predictions(log_path: Path):
     return rows
 
 
+def read_seed_predictions(path: Path | None):
+    if path is None:
+        return []
+    rows = []
+    if not path.exists():
+        raise FileNotFoundError(path)
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for i, row in enumerate(reader):
+            pred_text = row.get("ECR_pred", row.get("ECR", ""))
+            if pred_text in (None, ""):
+                continue
+            rows.append(
+                {
+                    "idx": int(row.get("idx", i) or i),
+                    "Id": str(row["Id"]),
+                    "ECR_pred": float(pred_text),
+                }
+            )
+    return rows
+
+
+def merge_unique_predictions(seed_rows, live_rows):
+    merged = []
+    seen = set()
+    for row in list(seed_rows) + list(live_rows):
+        vid = row["Id"]
+        if vid in seen:
+            continue
+        seen.add(vid)
+        merged.append(
+            {
+                "idx": len(merged),
+                "Id": vid,
+                "ECR_pred": float(row["ECR_pred"]),
+            }
+        )
+    return merged
+
+
 def read_labels(csv_path: Path):
     labels = {}
     with csv_path.open("r", encoding="utf-8", newline="") as f:
@@ -151,6 +191,11 @@ def main():
     parser.add_argument("--target-n", type=int, default=5000)
     parser.add_argument("--every-n", type=int, default=500)
     parser.add_argument("--poll-seconds", type=int, default=60)
+    parser.add_argument(
+        "--seed-predictions",
+        default=None,
+        help="Existing partial prediction CSV to prepend for resume runs.",
+    )
     parser.add_argument("--no-stop", action="store_true", help="Save partial outputs without killing the run.")
     parser.add_argument("--shutdown", action="store_true")
     args = parser.parse_args()
@@ -158,15 +203,20 @@ def main():
     log_path = Path(args.log)
     labels = read_labels(Path(args.labels_csv))
     out_dir = Path(args.out_dir)
+    seed_rows = read_seed_predictions(Path(args.seed_predictions)) if args.seed_predictions else []
 
     print(
         f"Monitoring {log_path} for {args.target_n} predictions. "
-        f"every_n={args.every_n} shutdown={args.shutdown}",
+        f"every_n={args.every_n} seed_n={len(seed_rows)} shutdown={args.shutdown}",
         flush=True,
     )
     saved_targets = set()
+    for checkpoint_n in range(args.every_n, min(len(seed_rows), args.target_n) + 1, args.every_n):
+        save_outputs(seed_rows, labels, out_dir, checkpoint_n)
+        saved_targets.add(checkpoint_n)
     while True:
-        rows = parse_predictions(log_path)
+        live_rows = parse_predictions(log_path)
+        rows = merge_unique_predictions(seed_rows, live_rows)
         last = rows[-1] if rows else None
         print(
             f"progress n={len(rows)}/{args.target_n}"
