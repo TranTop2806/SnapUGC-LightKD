@@ -48,9 +48,9 @@ EXTERNAL_PRETRAINED_WEIGHTS = [
 ]
 
 
-def run(cmd, *, cwd=None):
+def run(cmd, *, cwd=None, env=None):
     print("+ " + " ".join(map(str, cmd)), flush=True)
-    subprocess.run(list(map(str, cmd)), cwd=cwd, check=True)
+    subprocess.run(list(map(str, cmd)), cwd=cwd, env=env, check=True)
 
 
 def ensure_repo(repo_dir: Path, repo_url: str):
@@ -244,6 +244,201 @@ except ImportError:
     if old_tokenizer_init in tokenizer_text:
         tokenizer_path.write_text(tokenizer_text.replace(old_tokenizer_init, new_tokenizer_init))
 
+    patch_official_artifact_export(ecr_dir)
+
+
+def patch_official_artifact_export(ecr_dir: Path):
+    """Add env-gated artifact export hooks without changing scalar predictions."""
+    evqa_path = ecr_dir / "modules" / "EVQA.py"
+    evqa_text = evqa_path.read_text()
+    if "import os\n" not in evqa_text.splitlines()[:10]:
+        evqa_text = evqa_text.replace("import torch\n", "import os\nimport torch\n", 1)
+
+    attention_old = """        attn = attn.softmax(dim=-1)
+        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+        x = self.proj(x)"""
+    attention_new = """        attn = attn.softmax(dim=-1)
+        if os.environ.get("SNAPUGC_EXPORT_ARTIFACTS") == "1":
+            self.last_attn = attn.detach().to(torch.float16).cpu()
+        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+        x = self.proj(x)"""
+    if attention_old in evqa_text and "self.last_attn = attn.detach()" not in evqa_text:
+        evqa_text = evqa_text.replace(attention_old, attention_new, 1)
+
+    forward_old = """        feat_4 = feat4
+        feat_3_embed = self.feat3_preprocess(feat_3)
+        feat_3 = self.fc30(feat_3)
+        feat_4 = self.fc4(feat_4)"""
+    forward_new = """        caption_feature_raw = feat4
+        feat_4 = feat4
+        feat_3_embed = self.feat3_preprocess(feat_3)
+        feat_3 = self.fc30(feat_3)
+        feat_4 = self.fc4(feat_4)"""
+    if forward_old in evqa_text and "caption_feature_raw = feat4" not in evqa_text:
+        evqa_text = evqa_text.replace(forward_old, forward_new, 1)
+
+    output_old = """        feat123 = self.fc_merge123(torch.cat((feat_12, feat_3, feat_4, music_feature1, music_feature2_, music_feature3_, music_feature4), dim=1))
+        feat123 = feat123.unsqueeze(0)
+        out = self.block1(feat123).squeeze(0)
+        temp_out = self.out(out)
+        temp_out = torch.mean(temp_out, dim=0)
+        return temp_out"""
+    output_new = """        fusion_hidden = self.fc_merge123(torch.cat((feat_12, feat_3, feat_4, music_feature1, music_feature2_, music_feature3_, music_feature4), dim=1))
+        feat123 = fusion_hidden.unsqueeze(0)
+        out = self.block1(feat123).squeeze(0)
+        clip_ecr = self.out(out).view(-1)
+        temp_out = torch.mean(clip_ecr, dim=0).view(1)
+        if os.environ.get("SNAPUGC_EXPORT_ARTIFACTS") == "1":
+            attention_mean = []
+            for block in self.block1:
+                attn = getattr(block.attn, "last_attn", None)
+                if attn is not None:
+                    attention_mean.append(attn.squeeze(0).mean(dim=0).to(torch.float16))
+            if attention_mean:
+                attention_mean = torch.stack(attention_mean, dim=0)
+                attention_importance = attention_mean.mean(dim=1)
+            else:
+                attention_mean = torch.empty(0, dtype=torch.float16)
+                attention_importance = torch.empty(0, dtype=torch.float16)
+            text_tokens = torch.stack(
+                (
+                    text_embedding1[0],
+                    text_embedding2[0],
+                    text_embedding3[0],
+                    text_embedding4[0],
+                ),
+                dim=0,
+            )
+            self.last_artifacts = {
+                "fusion_hidden": fusion_hidden.detach().to(torch.float16).cpu(),
+                "temporal_hidden": out.detach().to(torch.float16).cpu(),
+                "clip_ecr": clip_ecr.detach().to(torch.float16).cpu(),
+                "caption_feature": caption_feature_raw.detach().to(torch.float16).cpu(),
+                "action_feature": feat_3_embed.detach().to(torch.float16).cpu(),
+                "frame_fusion_feature": feat_12.detach().to(torch.float16).cpu(),
+                "text_tokens": text_tokens.detach().to(torch.float16).cpu(),
+                "text_pooled": text_tokens.mean(dim=1).detach().to(torch.float16).cpu(),
+                "attention_mean": attention_mean.cpu(),
+                "attention_importance": attention_importance.cpu(),
+            }
+        return temp_out"""
+    if output_old in evqa_text and "self.last_artifacts" not in evqa_text:
+        evqa_text = evqa_text.replace(output_old, output_new, 1)
+    evqa_path.write_text(evqa_text)
+
+    script_path = ecr_dir / "test_SnapUGC_baseline.py"
+    text = script_path.read_text()
+    helper_marker = "def _snapugc_save_teacher_artifact"
+    helper = r'''
+SNAPUGC_ARTIFACT_DIR = os.environ.get("SNAPUGC_ARTIFACT_DIR")
+SNAPUGC_ARTIFACT_SHARD_SIZE = int(os.environ.get("SNAPUGC_ARTIFACT_SHARD_SIZE", "500"))
+SNAPUGC_ARTIFACT_ROWS = []
+
+def _snapugc_to_numpy(value, dtype=np.float16):
+    if value is None:
+        return None
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().numpy()
+    return np.asarray(value, dtype=dtype)
+
+def _snapugc_pack_ragged(rows, key):
+    arrays = []
+    offsets = [0]
+    shapes = []
+    for row in rows:
+        arr = row.get(key)
+        if arr is None:
+            arr = np.zeros((0,), dtype=np.float16)
+        arr = np.asarray(arr)
+        arrays.append(arr.reshape(-1))
+        shapes.append(arr.shape)
+        offsets.append(offsets[-1] + arrays[-1].size)
+    flat = np.concatenate(arrays, axis=0) if arrays else np.zeros((0,), dtype=np.float16)
+    return flat, np.asarray(offsets, dtype=np.int64), np.asarray(shapes, dtype=np.int32)
+
+def _snapugc_flush_teacher_artifacts(force=False):
+    if not SNAPUGC_ARTIFACT_DIR or not SNAPUGC_ARTIFACT_ROWS:
+        return
+    if not force and len(SNAPUGC_ARTIFACT_ROWS) < SNAPUGC_ARTIFACT_SHARD_SIZE:
+        return
+    rows = list(SNAPUGC_ARTIFACT_ROWS)
+    SNAPUGC_ARTIFACT_ROWS.clear()
+    out_dir = Path(SNAPUGC_ARTIFACT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    start_idx = int(rows[0]["idx"])
+    end_idx = int(rows[-1]["idx"])
+    prefix = f"official_teacher_artifacts_{start_idx:04d}_{end_idx:04d}"
+    payload = {
+        "ids": np.asarray([row["Id"] for row in rows], dtype="<U32"),
+        "order_idx": np.asarray([row["idx"] for row in rows], dtype=np.int32),
+        "teacher_ecr": np.asarray([row["teacher_ecr"] for row in rows], dtype=np.float32),
+    }
+    for key in (
+        "clip_ecr",
+        "fusion_hidden",
+        "temporal_hidden",
+        "caption_feature",
+        "action_feature",
+        "frame_fusion_feature",
+        "text_tokens",
+        "text_pooled",
+        "attention_mean",
+        "attention_importance",
+    ):
+        flat, offsets, shapes = _snapugc_pack_ragged(rows, key)
+        payload[f"{key}_flat"] = flat
+        payload[f"{key}_offsets"] = offsets
+        payload[f"{key}_shapes"] = shapes
+    np.savez_compressed(out_dir / f"{prefix}.npz", **payload)
+    with (out_dir / f"{prefix}_captions.jsonl").open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(
+                {
+                    "idx": int(row["idx"]),
+                    "Id": row["Id"],
+                    "caption": row.get("caption", ""),
+                },
+                ensure_ascii=False,
+            ) + "\n")
+    print(f"saved_teacher_artifact_shard {prefix} n={len(rows)} dir={out_dir}", flush=True)
+
+def _snapugc_save_teacher_artifact(idx, video_id, teacher_ecr, model, caption):
+    if not SNAPUGC_ARTIFACT_DIR:
+        return
+    artifacts = getattr(model, "last_artifacts", None)
+    if artifacts is None:
+        print(f"missing_teacher_artifacts {idx} {video_id}", flush=True)
+        return
+    row = {
+        "idx": int(idx),
+        "Id": str(video_id),
+        "teacher_ecr": float(teacher_ecr),
+        "caption": caption,
+    }
+    for key, value in artifacts.items():
+        row[key] = _snapugc_to_numpy(value)
+    SNAPUGC_ARTIFACT_ROWS.append(row)
+    _snapugc_flush_teacher_artifacts(force=False)
+'''
+    if helper_marker not in text:
+        text = text.replace("import csv\n", "import csv\nimport json\n", 1)
+        text = text.replace("from pathlib import Path\n", "from pathlib import Path\n" + helper + "\n", 1)
+
+    save_old = """        out0_val = out0_mean.clamp(0.0, 1.0).item()
+        # mos0_val = mos_label[0].clamp(0.0,1.0).item() # / 20.0"""
+    save_new = """        out0_val = out0_mean.clamp(0.0, 1.0).item()
+        _snapugc_save_teacher_artifact(idx, video_id, out0_val, model, caption)
+        # mos0_val = mos_label[0].clamp(0.0,1.0).item() # / 20.0"""
+    if save_old in text and "_snapugc_save_teacher_artifact(idx, video_id" not in text:
+        text = text.replace(save_old, save_new, 1)
+
+    flush_old = """    with open("submission_baseline.csv", "w", newline="") as csvfile:"""
+    flush_new = """    _snapugc_flush_teacher_artifacts(force=True)
+    with open("submission_baseline.csv", "w", newline="") as csvfile:"""
+    if flush_old in text and "_snapugc_flush_teacher_artifacts(force=True)" not in text:
+        text = text.replace(flush_old, flush_new, 1)
+    script_path.write_text(text)
+
 
 def prepare_official_csv(input_csv: Path, output_csv: Path, max_samples: int | None = None):
     rows = []
@@ -334,6 +529,17 @@ def main():
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--download-checkpoints", action="store_true")
     parser.add_argument("--no-light-sd-text-encoder", action="store_true")
+    parser.add_argument(
+        "--export-artifacts",
+        action="store_true",
+        help="Export hidden states, clip outputs, text/caption features, and attention shards.",
+    )
+    parser.add_argument(
+        "--artifact-dir",
+        default=None,
+        help="Directory for teacher artifact shards. Defaults to OUT_DIR/teacher_artifacts.",
+    )
+    parser.add_argument("--artifact-shard-size", type=int, default=500)
     parser.add_argument("--skip-run", action="store_true", help="Only prepare CSV/checks.")
     args = parser.parse_args()
 
@@ -341,6 +547,7 @@ def main():
     videos_dir = Path(args.videos_dir).resolve()
     csv_file = Path(args.csv_file).resolve()
     out_dir = Path(args.out_dir).resolve()
+    artifact_dir = Path(args.artifact_dir).resolve() if args.artifact_dir else out_dir / "teacher_artifacts"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ensure_repo(repo_dir, args.repo_url)
@@ -368,6 +575,13 @@ def main():
         submission_path = ecr_dir / "submission_baseline.csv"
         if submission_path.exists():
             submission_path.unlink()
+        run_env = os.environ.copy()
+        if args.export_artifacts:
+            run_env["SNAPUGC_EXPORT_ARTIFACTS"] = "1"
+            run_env["SNAPUGC_ARTIFACT_DIR"] = str(artifact_dir)
+            run_env["SNAPUGC_ARTIFACT_SHARD_SIZE"] = str(args.artifact_shard_size)
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Teacher artifact export enabled: {artifact_dir}", flush=True)
         run([
             args.python,
             "test_SnapUGC_baseline.py",
@@ -375,7 +589,7 @@ def main():
             videos_dir,
             "--csv_file",
             official_csv,
-        ], cwd=ecr_dir)
+        ], cwd=ecr_dir, env=run_env)
         if not submission_path.exists():
             raise FileNotFoundError(f"Official script did not create {submission_path}")
         out_submission = out_dir / "official_submission_baseline.csv"
@@ -400,6 +614,9 @@ def main():
             "submission": str(out_submission),
             "n_rows": len(rows),
             "n_videos_found": found,
+            "export_artifacts": bool(args.export_artifacts),
+            "artifact_dir": str(artifact_dir) if args.export_artifacts else None,
+            "artifact_shard_size": args.artifact_shard_size if args.export_artifacts else None,
             "metrics": metrics,
         }
         with (out_dir / "official_evqa_report.json").open("w", encoding="utf-8") as f:
