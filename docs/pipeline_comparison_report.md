@@ -1,6 +1,6 @@
 # SnapUGC-LightKD Pipeline And Literature Comparison
 
-Last updated: 2026-04-19
+Last updated: 2026-05-03
 
 ## 1. Current Pipeline
 
@@ -172,6 +172,9 @@ Current KD weights from report:
 | Current SnapUGC-LightKD 2k balanced, Teacher | 1600/400 split | `0.409` | `0.426` | `0.419` |
 | Current SnapUGC-LightKD 2k balanced, Student baseline | 1600/400 split | `0.444` | `0.456` | `0.451` |
 | Current SnapUGC-LightKD 2k balanced, Student KD | 1600/400 split | `0.474` | `0.477` | `0.476` |
+| Opening-5 5k teacher, best single v8 | 4000/1000 split | `0.570` | `0.570` | `0.570` |
+| Opening-5 5k teacher, best ensemble | 4000/1000 split | `0.586` | `0.579` | `0.582` |
+| Clean-complete-metadata 5k teacher, best single v8 | 4000/1000 split | `0.483` | `0.482` | `0.482` |
 | Current 2k balanced, tabular Ridge on teacher features | 1600/400 split | `0.483` | `0.473` | `0.477` |
 | Old Distil-ShortVU 5k, Student KD | 4000/1000 split | `0.551` | `0.545` | `~0.548` |
 | Old Distil-ShortVU 100k, Student KD | 84011/21003 split | `0.709` | `0.690` | `~0.697` |

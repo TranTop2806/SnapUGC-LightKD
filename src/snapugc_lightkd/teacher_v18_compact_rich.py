@@ -1,8 +1,4 @@
-"""Teacher v3: smaller regularized 7-token teacher.
-
-This version keeps the same seven teacher modalities as the original teacher,
-but reduces capacity and adds modality dropout for the low-data 5k setting.
-"""
+"""Teacher v18: compact rich-input teacher with fewer fusion tokens."""
 
 import torch
 import torch.nn as nn
@@ -11,25 +7,29 @@ import torch.nn.functional as F
 from .models import AttentionPool, ResidualBlock, TemporalEncoder
 
 
-class TeacherV3Regularized(nn.Module):
-    """Reduced-capacity teacher with modality dropout and auxiliary quality loss."""
+class TeacherV18CompactRich(nn.Module):
+    """Merge correlated side channels before Transformer fusion."""
 
     def __init__(
         self,
         clip_dim=512,
         motion_dim=512,
         audio_dim=1024,
+        audio_probs_dim=521,
         text_dim=768,
         quality_dim=3,
+        numeric_dim=8,
         hidden_dim=384,
         n_blocks=1,
         n_heads=6,
         max_frames=16,
         max_motion_clips=4,
-        dropout=0.35,
+        dropout=0.25,
         text_drop_prob=0.20,
         quality_drop_prob=0.10,
         motion_drop_prob=0.10,
+        audio_probs_drop_prob=0.10,
+        numeric_drop_prob=0.10,
         aux_weight=0.15,
     ):
         super().__init__()
@@ -37,15 +37,12 @@ class TeacherV3Regularized(nn.Module):
         self.text_drop_prob = float(text_drop_prob)
         self.quality_drop_prob = float(quality_drop_prob)
         self.motion_drop_prob = float(motion_drop_prob)
+        self.audio_probs_drop_prob = float(audio_probs_drop_prob)
+        self.numeric_drop_prob = float(numeric_drop_prob)
         self.aux_weight = float(aux_weight)
 
         self.visual_encoder = TemporalEncoder(
-            clip_dim,
-            hidden_dim,
-            n_layers=1,
-            n_heads=n_heads,
-            max_tokens=max_frames,
-            dropout=dropout,
+            clip_dim, hidden_dim, n_layers=1, n_heads=n_heads, max_tokens=max_frames, dropout=dropout
         )
         self.motion_encoder = TemporalEncoder(
             motion_dim,
@@ -64,11 +61,11 @@ class TeacherV3Regularized(nn.Module):
                 nn.Dropout(dropout),
             )
 
-        self.audio_proj = projector(audio_dim)
+        self.audio_proj = projector(audio_dim + audio_probs_dim)
         self.text_proj = projector(text_dim)
         self.caption_proj = projector(text_dim)
         self.rationale_proj = projector(text_dim)
-        self.quality_proj = projector(quality_dim)
+        self.quality_proj = projector(quality_dim + numeric_dim)
 
         self.modality_embed = nn.Parameter(torch.zeros(1, 7, hidden_dim))
         fusion_layer = nn.TransformerEncoderLayer(
@@ -107,18 +104,10 @@ class TeacherV3Regularized(nn.Module):
             nn.Sigmoid(),
         )
 
-    def _drop_modalities(self, motion_clips, caption_emb, rationale_emb, quality_scores):
-        if not self.training:
-            return motion_clips, caption_emb, rationale_emb, quality_scores
-
-        if torch.rand((), device=caption_emb.device).item() < self.text_drop_prob:
-            caption_emb = torch.zeros_like(caption_emb)
-            rationale_emb = torch.zeros_like(rationale_emb)
-        if torch.rand((), device=quality_scores.device).item() < self.quality_drop_prob:
-            quality_scores = torch.zeros_like(quality_scores)
-        if torch.rand((), device=motion_clips.device).item() < self.motion_drop_prob:
-            motion_clips = torch.zeros_like(motion_clips)
-        return motion_clips, caption_emb, rationale_emb, quality_scores
+    def _maybe_zero(self, value, prob):
+        if self.training and torch.rand((), device=value.device).item() < prob:
+            return torch.zeros_like(value)
+        return value
 
     def forward(
         self,
@@ -129,6 +118,8 @@ class TeacherV3Regularized(nn.Module):
         motion_clips=None,
         caption_emb=None,
         rationale_emb=None,
+        audio_probs=None,
+        numeric_features=None,
         clip_mask=None,
         motion_mask=None,
         ecr_targets=None,
@@ -137,25 +128,32 @@ class TeacherV3Regularized(nn.Module):
     ):
         bsz = clip_frames.size(0)
         device = clip_frames.device
-
         if motion_clips is None:
             motion_clips = torch.zeros(bsz, 1, 512, device=device)
         if caption_emb is None:
             caption_emb = torch.zeros_like(text_emb)
         if rationale_emb is None:
             rationale_emb = torch.zeros_like(text_emb)
+        if audio_probs is None:
+            audio_probs = torch.zeros(bsz, 521, device=device)
+        if numeric_features is None:
+            numeric_features = torch.zeros(bsz, 8, device=device)
 
-        motion_clips, caption_emb, rationale_emb, quality_scores = self._drop_modalities(
-            motion_clips, caption_emb, rationale_emb, quality_scores
-        )
+        if self.training and torch.rand((), device=device).item() < self.text_drop_prob:
+            caption_emb = torch.zeros_like(caption_emb)
+            rationale_emb = torch.zeros_like(rationale_emb)
+        motion_clips = self._maybe_zero(motion_clips, self.motion_drop_prob)
+        quality_scores = self._maybe_zero(quality_scores, self.quality_drop_prob)
+        audio_probs = self._maybe_zero(audio_probs, self.audio_probs_drop_prob)
+        numeric_features = self._maybe_zero(numeric_features, self.numeric_drop_prob)
 
         visual_token, _, temporal_attn = self.visual_encoder(clip_frames, clip_mask)
         motion_token, _, motion_attn = self.motion_encoder(motion_clips, motion_mask)
-        audio_token = self.audio_proj(audio_emb)
+        audio_token = self.audio_proj(torch.cat([audio_emb, audio_probs], dim=-1))
         text_token = self.text_proj(text_emb)
         caption_token = self.caption_proj(caption_emb)
         rationale_token = self.rationale_proj(rationale_emb)
-        quality_token = self.quality_proj(quality_scores)
+        quality_token = self.quality_proj(torch.cat([quality_scores, numeric_features], dim=-1))
 
         tokens = torch.stack(
             [
@@ -169,7 +167,7 @@ class TeacherV3Regularized(nn.Module):
             ],
             dim=1,
         )
-        tokens = tokens + self.modality_embed[:, : tokens.size(1), :]
+        tokens = tokens + self.modality_embed
         fused_tokens = self.fusion(tokens)
         hidden, modality_attn = self.modality_pool(fused_tokens)
         hidden = self.post(hidden)
@@ -177,7 +175,6 @@ class TeacherV3Regularized(nn.Module):
         predicted_ecr = self.ecr_head(hidden).squeeze(-1)
         predicted_aesthetic = self.aesthetic_head(hidden).squeeze(-1)
         predicted_technical = self.technical_head(hidden).squeeze(-1)
-
         outputs = {
             "predicted_ecr": predicted_ecr,
             "predicted_aesthetic": predicted_aesthetic,

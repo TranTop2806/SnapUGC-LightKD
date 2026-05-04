@@ -229,9 +229,11 @@ class StudentModel(nn.Module):
 
     def __init__(self, clip_dim=512, audio_dim=1024, text_dim=768,
                  hidden_dim=256, teacher_hidden_dim=512, n_heads=4,
-                 max_frames=16, dropout=0.1):
+                 max_frames=16, dropout=0.1, use_audio=True, use_text=True):
         super().__init__()
         self.hidden_dim = hidden_dim
+        self.use_audio = use_audio
+        self.use_text = use_text
 
         self.visual_encoder = TemporalEncoder(
             clip_dim, hidden_dim, n_layers=2, n_heads=n_heads,
@@ -246,9 +248,10 @@ class StudentModel(nn.Module):
                 nn.Dropout(dropout),
             )
 
-        self.audio_proj = projector(audio_dim)
-        self.text_proj = projector(text_dim)
-        self.modality_embed = nn.Parameter(torch.zeros(1, 3, hidden_dim))
+        self.audio_proj = projector(audio_dim) if use_audio else None
+        self.text_proj = projector(text_dim) if use_text else None
+        n_modalities = 1 + int(use_audio) + int(use_text)
+        self.modality_embed = nn.Parameter(torch.zeros(1, n_modalities, hidden_dim))
         fusion_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
             nhead=n_heads,
@@ -300,10 +303,13 @@ class StudentModel(nn.Module):
             }
 
         visual_token, _, temporal_attn = self.visual_encoder(clip_frames, clip_mask)
-        audio_token = self.audio_proj(audio_emb)
-        text_token = self.text_proj(text_emb)
 
-        tokens = torch.stack([visual_token, audio_token, text_token], dim=1)
+        tokens = [visual_token]
+        if self.use_audio:
+            tokens.append(self.audio_proj(audio_emb))
+        if self.use_text:
+            tokens.append(self.text_proj(text_emb))
+        tokens = torch.stack(tokens, dim=1)
         tokens = tokens + self.modality_embed[:, :tokens.size(1), :]
         fused_tokens = self.fusion(tokens)
         hidden, modality_attn = self.modality_pool(fused_tokens)

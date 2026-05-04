@@ -32,45 +32,29 @@ from .training import (
 
 MODEL_REGISTRY = {
     "v2_original": ("snapugc_lightkd.models", "TeacherModel"),
-    "v3_regularized_7tok": (
-        "snapugc_lightkd.teacher_v3_regularized",
-        "TeacherV3Regularized",
-    ),
-    "v4_shared_text_5tok": (
-        "snapugc_lightkd.teacher_v4_shared_text",
-        "TeacherV4SharedText",
-    ),
-    "v5_gated_late_fusion": (
-        "snapugc_lightkd.teacher_v5_gated_late_fusion",
-        "TeacherV5GatedLateFusion",
-    ),
-    "v6_pooled_rank": (
-        "snapugc_lightkd.teacher_v6_pooled_rank",
-        "TeacherV6PooledRank",
-    ),
-    "v7_corr_rank": (
-        "snapugc_lightkd.teacher_v7_corr_rank",
-        "TeacherV7CorrRank",
-    ),
     "v8_rich_inputs": (
         "snapugc_lightkd.teacher_v8_rich_inputs",
         "TeacherV8RichInputs",
     ),
-    "v9_rich_corr_rank": (
-        "snapugc_lightkd.teacher_v9_rich_corr_rank",
-        "TeacherV9RichCorrRank",
+    "v14_no_generated_text": (
+        "snapugc_lightkd.teacher_v14_selective_inputs",
+        "TeacherV14NoGeneratedText",
     ),
-    "v10_compact_rich": (
-        "snapugc_lightkd.teacher_v10_compact_rich",
-        "TeacherV10CompactRich",
+    "v15_opening_core": (
+        "snapugc_lightkd.teacher_v14_selective_inputs",
+        "TeacherV15OpeningCore",
     ),
-    "v12_rich_linear_head": (
-        "snapugc_lightkd.teacher_v12_rich_linear_head",
-        "TeacherV12RichLinearHead",
+    "v16_visual_text_quality": (
+        "snapugc_lightkd.teacher_v14_selective_inputs",
+        "TeacherV16VisualTextQuality",
     ),
-    "v13_rich_sampledrop": (
-        "snapugc_lightkd.teacher_v13_rich_sampledrop",
-        "TeacherV13RichSampleDrop",
+    "v17_no_quality": (
+        "snapugc_lightkd.teacher_v14_selective_inputs",
+        "TeacherV17NoQuality",
+    ),
+    "v18_compact_rich": (
+        "snapugc_lightkd.teacher_v18_compact_rich",
+        "TeacherV18CompactRich",
     ),
 }
 

@@ -50,7 +50,10 @@ def predict(report_path: Path, data, device: torch.device, batch_size: int):
     report = json.loads(report_path.read_text(encoding="utf-8"))
     cls = load_teacher_class(report["model_version"])
     model = cls(**report["teacher_kwargs"]).to(device)
-    model.load_state_dict(torch.load(report["best"]["checkpoint"], map_location=device, weights_only=True))
+    checkpoint = Path(report["best"]["checkpoint"])
+    if not checkpoint.exists():
+        checkpoint = report_path.parent / checkpoint.name
+    model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True))
     model.eval()
 
     training = report.get("training") or {}

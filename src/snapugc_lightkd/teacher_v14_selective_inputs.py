@@ -1,4 +1,9 @@
-"""Teacher v13: V8 rich inputs with per-sample modality dropout."""
+"""Teacher v14-v17: V8-style teachers with selected input groups removed.
+
+These variants test whether opening-5s features benefit from a smaller fusion
+set. The removed modalities are not inserted as zero tokens; they are excluded
+from the Transformer token sequence.
+"""
 
 import torch
 import torch.nn.functional as F
@@ -6,8 +11,19 @@ import torch.nn.functional as F
 from .teacher_v8_rich_inputs import TeacherV8RichInputs
 
 
-class TeacherV13RichSampleDrop(TeacherV8RichInputs):
-    """V8 architecture, but dropout masks are sampled per item instead of per batch."""
+class _SelectiveInputTeacher(TeacherV8RichInputs):
+    token_names = (
+        "visual",
+        "motion",
+        "audio",
+        "audio_probs",
+        "text",
+        "caption",
+        "rationale",
+        "quality",
+        "numeric",
+    )
+    include_tokens = token_names
 
     def _sample_zero(self, value, prob):
         if not self.training or prob <= 0:
@@ -58,29 +74,22 @@ class TeacherV13RichSampleDrop(TeacherV8RichInputs):
 
         visual_token, _, temporal_attn = self.visual_encoder(clip_frames, clip_mask)
         motion_token, _, motion_attn = self.motion_encoder(motion_clips, motion_mask)
-        audio_token = self.audio_proj(audio_emb)
-        audio_probs_token = self.audio_probs_proj(audio_probs)
-        text_token = self.text_proj(text_emb)
-        caption_token = self.caption_proj(caption_emb)
-        rationale_token = self.rationale_proj(rationale_emb)
-        quality_token = self.quality_proj(quality_scores)
-        numeric_token = self.numeric_proj(numeric_features)
+        token_map = {
+            "visual": visual_token,
+            "motion": motion_token,
+            "audio": self.audio_proj(audio_emb),
+            "audio_probs": self.audio_probs_proj(audio_probs),
+            "text": self.text_proj(text_emb),
+            "caption": self.caption_proj(caption_emb),
+            "rationale": self.rationale_proj(rationale_emb),
+            "quality": self.quality_proj(quality_scores),
+            "numeric": self.numeric_proj(numeric_features),
+        }
+        token_index = {name: idx for idx, name in enumerate(self.token_names)}
+        tokens = torch.stack([token_map[name] for name in self.include_tokens], dim=1)
+        embed_indices = [token_index[name] for name in self.include_tokens]
+        tokens = tokens + self.modality_embed[:, embed_indices, :]
 
-        tokens = torch.stack(
-            [
-                visual_token,
-                motion_token,
-                audio_token,
-                audio_probs_token,
-                text_token,
-                caption_token,
-                rationale_token,
-                quality_token,
-                numeric_token,
-            ],
-            dim=1,
-        )
-        tokens = tokens + self.modality_embed[:, : tokens.size(1), :]
         fused_tokens = self.fusion(tokens)
         hidden, modality_attn = self.modality_pool(fused_tokens)
         hidden = self.post(hidden)
@@ -108,3 +117,27 @@ class TeacherV13RichSampleDrop(TeacherV8RichInputs):
             outputs["loss"] = loss
 
         return outputs
+
+
+class TeacherV14NoGeneratedText(_SelectiveInputTeacher):
+    """Drop BLIP caption and rationale tokens; keep measured modalities."""
+
+    include_tokens = ("visual", "motion", "audio", "audio_probs", "text", "quality", "numeric")
+
+
+class TeacherV15OpeningCore(_SelectiveInputTeacher):
+    """Drop generated text and YAMNet class probabilities."""
+
+    include_tokens = ("visual", "motion", "audio", "text", "quality", "numeric")
+
+
+class TeacherV16VisualTextQuality(_SelectiveInputTeacher):
+    """Keep visual/motion, metadata text, DOVER quality, and numeric metadata only."""
+
+    include_tokens = ("visual", "motion", "text", "quality", "numeric")
+
+
+class TeacherV17NoQuality(_SelectiveInputTeacher):
+    """Drop generated text, DOVER quality, and numeric metadata."""
+
+    include_tokens = ("visual", "motion", "audio", "audio_probs", "text")
