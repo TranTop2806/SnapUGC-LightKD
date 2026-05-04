@@ -429,8 +429,16 @@ def _snapugc_save_teacher_artifact(idx, video_id, teacher_ecr, model, caption):
     save_new = """        out0_val = out0_mean.clamp(0.0, 1.0).item()
         _snapugc_save_teacher_artifact(idx, video_id, out0_val, model, caption)
         # mos0_val = mos_label[0].clamp(0.0,1.0).item() # / 20.0"""
-    if save_old in text and "_snapugc_save_teacher_artifact(idx, video_id" not in text:
+    save_call_marker = "_snapugc_save_teacher_artifact(idx, video_id, out0_val"
+    if save_old in text and save_call_marker not in text:
         text = text.replace(save_old, save_new, 1)
+    if save_call_marker not in text:
+        text = text.replace(
+            "        out0_val = out0_mean.clamp(0.0, 1.0).item()\n",
+            "        out0_val = out0_mean.clamp(0.0, 1.0).item()\n"
+            "        _snapugc_save_teacher_artifact(idx, video_id, out0_val, model, caption)\n",
+            1,
+        )
 
     flush_old = """    with open("submission_baseline.csv", "w", newline="") as csvfile:"""
     flush_new = """    _snapugc_flush_teacher_artifacts(force=True)
