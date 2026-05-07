@@ -99,12 +99,19 @@ loss_kd =
   hard_ecr      * MSE(student_ecr, true_ecr)
 + soft_ecr      * MSE(student_ecr, teacher_ecr)
 + clip_ecr      * MSE(student_clip_ecr, teacher_clip_ecr)
-+ temporal      * MSE(project(student_temporal), teacher_temporal_hidden)
-+ fusion        * MSE(project(student_hidden), mean(teacher_fusion_hidden))
++ temporal      * repr_loss(project(student_temporal), teacher_temporal_hidden)
++ fusion        * repr_loss(project(student_hidden), mean(teacher_fusion_hidden))
 + attention     * KL(student_temporal_attention, teacher_attention_importance)
++ hard_rank     * pairwise_rank(student_ecr, true_ecr)
++ teacher_rank  * pairwise_rank(student_ecr, teacher_ecr)
 ```
 
-Default weights in `scripts/train_official_student_kd.py`:
+`repr_loss` can be `raw_mse`, `normalized_mse`, or `cosine`. The original
+raw-MSE hidden distillation was too large in scale and dominated the objective.
+The tuned student uses cosine/normalized representation loss with small weights,
+plus pairwise rank KD to improve SRCC.
+
+Initial default weights in `scripts/train_official_student_kd.py`:
 
 ```text
 hard_ecr:        1.0
@@ -113,6 +120,28 @@ clip_ecr:        0.2
 temporal_hidden: 0.2
 fusion_hidden:   0.1
 attention:       0.05
+```
+
+Best tuned 5000-video setting so far:
+
+```text
+Architecture:
+- input_preset: visual_text
+- hidden_dim: 96
+- transformer layers: 1
+- heads: 4
+- dropout: 0.22
+- max_clips: 16
+
+KD:
+- repr_loss: cosine
+- soft_ecr: 1.1
+- clip_ecr: 0.08
+- temporal_hidden: 0.02
+- fusion_hidden: 0.02
+- attention: 0.005
+- hard_rank: 0.02
+- teacher_rank: 0.12
 ```
 
 ## Training Command
@@ -130,6 +159,33 @@ python scripts/train_official_student_kd.py \
   --batch 32 \
   --hidden-dim 128 \
   --max-clips 16
+```
+
+Current tuned command:
+
+```bash
+python scripts/train_official_student_kd.py \
+  --artifact-dir results/original_snapugc_official_balanced_5000_artifacts_g2_32/teacher_artifacts \
+  --labels-csv data/train_subset_balanced_5000.csv \
+  --save-dir results/kd_tuning_official_5k/v05_small_cosine_rank \
+  --input-preset visual_text \
+  --epochs 40 \
+  --batch 64 \
+  --eval-batch 256 \
+  --hidden-dim 96 \
+  --layers 1 \
+  --heads 4 \
+  --dropout 0.22 \
+  --lr 4e-4 \
+  --weight-decay 0.03 \
+  --repr-loss cosine \
+  --soft-weight 1.1 \
+  --clip-weight 0.08 \
+  --temporal-weight 0.02 \
+  --fusion-weight 0.02 \
+  --attention-weight 0.005 \
+  --hard-rank-weight 0.02 \
+  --teacher-rank-weight 0.12
 ```
 
 For CPU smoke tests:

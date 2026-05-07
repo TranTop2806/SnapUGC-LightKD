@@ -82,3 +82,52 @@ KD targets:
 - teacher fusion_hidden
 - teacher attention_importance
 ```
+
+## Tuned Student KD Result
+
+After the first clean baseline, KD was tuned on the same deterministic
+`4000/1000` split. The best current student is smaller than the initial student:
+
+```text
+Student architecture:
+- input preset = visual_text
+- hidden_dim   = 96
+- layers       = 1
+- heads        = 4
+- dropout      = 0.22
+
+KD objective:
+- hard ECR + soft teacher ECR
+- teacher clip ECR
+- cosine representation KD on temporal/fusion hidden states
+- light attention KD
+- pairwise rank loss against true ECR and teacher ECR
+```
+
+Fair same-architecture baseline:
+
+```text
+Best epoch = 9
+PLCC       = 0.514888
+SRCC       = 0.510886
+Final      = 0.512487
+```
+
+Tuned KD:
+
+```text
+Best epoch = 15
+PLCC       = 0.582792
+SRCC       = 0.578094
+Final      = 0.579973
+KD gain    = +0.067486
+```
+
+Tuning result path:
+
+```text
+results/kd_tuning_official_5k/
+results/kd_tuning_official_5k/comparison.csv
+results/kd_tuning_official_5k/v05_small_baseline/
+results/kd_tuning_official_5k/v05_small_cosine_rank/
+```
