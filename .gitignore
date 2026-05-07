@@ -16,6 +16,7 @@ venv/
 # Data and generated artifacts
 data/*.csv
 data/train_videos/
+data/official_balanced_5000_videos/
 data/raw/
 data/processed/
 features/

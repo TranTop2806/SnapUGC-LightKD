@@ -1,12 +1,11 @@
 # Exact Original SnapUGC Reproduction
 
-This note documents the difference between the current thesis pipeline and the
-original SnapUGC paper/official code path.
+This note documents the official SnapUGC paper/teacher code path that is used
+for the current bounded 5000-video thesis run.
 
 ## Paper Feature Stack
 
-The original paper does not use the current `CLIP + R(2+1)D + BLIP-base +
-Sentence-T5` feature stack. The paper and official repository use:
+The original paper and official repository use:
 
 | Paper component | Official implementation | Shape in official EVQA code |
 |---|---|---:|
@@ -40,7 +39,27 @@ dataset as well. The Kaggle notebook caches it under
 
 ## Official EVQA Architecture
 
-The released architecture is in:
+The paper teacher architecture is not implemented in this repository's
+`src/snapugc_lightkd/models.py`. The clean local reference copy is vendored at:
+
+```text
+third_party/SnapUGC_Engagement/ECR_inference/
+```
+
+On GCloud, `scripts/run_official_snapugc_evqa.py` uses the same authors'
+released source and patches a working copy at runtime. The relevant files are:
+
+```text
+third_party/SnapUGC_Engagement/ECR_inference/modules/EVQA.py
+third_party/SnapUGC_Engagement/ECR_inference/test_SnapUGC_baseline.py
+third_party/SnapUGC_Engagement/ECR_inference/modules/efficientnet_v2.py
+third_party/SnapUGC_Engagement/ECR_inference/modules/distort.py
+third_party/SnapUGC_Engagement/ECR_inference/modules/resnet3d.py
+third_party/SnapUGC_Engagement/ECR_inference/mPLUG_2/models/model_video_caption_mplug2.py
+third_party/SnapUGC_Engagement/ECR_inference/mPLUG_2/models/visual_transformers.py
+```
+
+The upstream source is:
 
 <https://github.com/dasongli1/SnapUGC_Engagement/blob/main/ECR_inference/modules/EVQA.py>
 
@@ -88,17 +107,16 @@ ablation, not the main reproduction.
 
 ## Running The Exact Official Path On The 5k Subset
 
-Use the wrapper below on Kaggle after the 5k videos have been downloaded under
-`subset_videos/` and the official checkpoints have been placed under
-`/kaggle/working/SnapUGC_Engagement/ECR_inference/checkpoints/`.
+Use the wrapper below after the 5k videos have been downloaded and the official
+checkpoints have been placed under `ECR_inference/checkpoints/` or supplied by
+the GCloud runner's `CHECKPOINT_DIR`.
 
 ```bash
 python scripts/run_official_snapugc_evqa.py \
-  --official-repo-dir /kaggle/working/SnapUGC_Engagement \
-  --videos-dir /kaggle/working/opening5_final_5000_videos/subset_videos \
-  --csv-file results/opening5_teacher_5000/train_subset_5000.csv \
-  --out-dir results/original_snapugc_official_evqa_5000 \
-  --download-checkpoints
+  --official-repo-dir third_party/SnapUGC_Engagement \
+  --videos-dir data/official_balanced_5000_videos \
+  --csv-file data/train_subset_balanced_5000.csv \
+  --out-dir results/original_snapugc_official_balanced_5000
 ```
 
 Outputs:
@@ -106,20 +124,6 @@ Outputs:
 - `official_input.csv`: CSV converted to official repo format.
 - `official_submission_baseline.csv`: official ECR predictions.
 - `official_evqa_report.json`: PLCC/SRCC/final score against the 5k ECR labels.
-
-## Important Difference From Previous v20 Attempt
-
-The previous local `v20` experiment only copied the high-level idea of
-clip-level cross-attention using already extracted features. It was not an exact
-paper reproduction because it used substitute features:
-
-- CLIP instead of EfficientNetV2 semantic features.
-- R(2+1)D instead of the official ResNet3D checkpoint.
-- DOVER-Mobile scores instead of the official UVQ distortion feature tensor.
-- BLIP-base instead of mPLUG-2 caption and mid-layer features.
-- Sentence-T5 embeddings instead of Stable Diffusion text encoder embeddings.
-
-For exact comparison, use only the official wrapper above.
 
 ## GCP L4 Local Run Guide
 

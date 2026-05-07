@@ -55,7 +55,10 @@ def run(cmd, *, cwd=None, env=None):
 
 def ensure_repo(repo_dir: Path, repo_url: str):
     if (repo_dir / "ECR_inference" / "test_SnapUGC_baseline.py").exists():
-        run(["git", "checkout", OFFICIAL_COMMIT], cwd=repo_dir)
+        if (repo_dir / ".git").exists():
+            run(["git", "checkout", OFFICIAL_COMMIT], cwd=repo_dir)
+        else:
+            print(f"Using vendored official SnapUGC source: {repo_dir}", flush=True)
         return
     repo_dir.parent.mkdir(parents=True, exist_ok=True)
     run(["git", "clone", repo_url, repo_dir])
@@ -158,6 +161,14 @@ def patch_official_code(
     text = text.replace(
         "num_one_running = 48",
         "num_one_running = int(os.environ.get('SNAPUGC_OFFICIAL_FRAME_BATCH', '24'))",
+    )
+    text = text.replace(
+        "bs = 4",
+        "bs = int(os.environ.get('SNAPUGC_MPLUG_CLIP_BATCH', '4'))",
+    )
+    text = text.replace(
+        "DataLoader(dataset, batch_size=1, shuffle=False, num_workers=1,collate_fn=None,pin_memory=False)",
+        "DataLoader(dataset, batch_size=1, shuffle=False, num_workers=int(os.environ.get('SNAPUGC_DATALOADER_WORKERS', '1')), collate_fn=None, pin_memory=False)",
     )
 
     # Recent CLIPTextModel versions may not expose position_ids as a loadable
