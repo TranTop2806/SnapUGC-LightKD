@@ -1,3 +1,3 @@
-"""SnapUGC-LightKD: literature-aligned lightweight KD for short-video engagement prediction."""
+"""SnapUGC-LightKD official-teacher tooling."""
 
 __version__ = "0.1.0"

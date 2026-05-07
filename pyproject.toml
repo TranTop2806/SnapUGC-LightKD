@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "snapugc-lightkd"
 version = "0.1.0"
-description = "Literature-aligned lightweight knowledge distillation for SnapUGC short-video engagement prediction."
+description = "Official SnapUGC teacher reproduction and bounded 5k KD experiment tooling."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -28,10 +28,6 @@ extraction = [
   "tensorflow-hub>=0.16",
 ]
 notebook = ["jupyter", "matplotlib"]
-
-[project.scripts]
-snapugc-extract = "snapugc_lightkd.extraction:main"
-snapugc-train = "snapugc_lightkd.training:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
