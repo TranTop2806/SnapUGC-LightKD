@@ -29,7 +29,9 @@ The official teacher architecture is not reimplemented in
 lives in `third_party/SnapUGC_Engagement/ECR_inference/`. Runtime code patches
 a working copy only for compatibility/artifact export. See
 `docs/original_snapugc_exact_reproduction.md` for file-level architecture
-details.
+details, and `docs/gcp_official_inference_artifacts_readme.md` for the concrete
+Google Cloud runbook used to run official inference and export teacher artifact
+shards.
 
 ## Dataset And Split
 
@@ -115,15 +117,20 @@ This project has three model roles:
    Loss: ground-truth ECR + teacher ECR/artifact/ranking distillation
 ```
 
-The student never sees the full privileged teacher input stack at inference
-time. It uses the `visual_text` preset for the main thesis setting:
+The deployable student never sees the full privileged teacher input stack at
+inference time. The retained deployable preset is `visual_text_sound`:
 
 ```text
-Student input preset: visual_text
+Student input preset: visual_text_sound
 - frame_fusion_feature: T x 1024
+- YAMNet top sound labels pooled text embedding: 1 x 768
 - title pooled text embedding: 1 x 768
 - description pooled text embedding: 1 x 768
 ```
+
+The current best single student also adds learned source/type embeddings before
+text pooling, so the model can distinguish sound labels, title text, and
+description text while keeping the same deployable input features.
 
 The teacher artifacts available for KD are:
 
@@ -245,7 +252,7 @@ flowchart TD
 
 ### Student Baseline Architecture
 
-The student baseline is a compact model over the `visual_text` artifacts:
+The deployable student is a compact model over the `visual_text_sound` artifacts:
 
 ```mermaid
 flowchart TD
@@ -254,7 +261,7 @@ flowchart TD
     PE --> TE["Small temporal Transformer"]
     TE --> AP["Attention pooling"]
 
-    TX["title + description pooled embeddings<br/>2 x 768"] --> TP["Text projection<br/>768 -> hidden_dim"]
+    TX["sound + title + description pooled embeddings<br/>3 x 768"] --> TP["Text projection + source embedding<br/>768 -> hidden_dim"]
     TP --> TAP["Text attention pooling"]
 
     AP --> CAT["Concat video pooled + text pooled"]
@@ -311,31 +318,37 @@ loss_kd =
 model uses cosine representation KD because raw hidden-state MSE was too large
 in scale and dominated scalar ECR/ranking losses.
 
-Best tuned KD command:
+Best tuned KD command with audio-derived sound text, learned text source/type
+embeddings, and paper-guided score-shape KD:
 
 ```bash
 python scripts/train_official_student_kd.py \
   --artifact-dir results/original_snapugc_official_balanced_5000_artifacts_g2_32/teacher_artifacts \
   --labels-csv data/train_subset_balanced_5000.csv \
-  --save-dir results/kd_tuning_official_5k/v05_small_cosine_rank \
-  --input-preset visual_text \
-  --epochs 40 \
-  --batch 64 \
-  --eval-batch 256 \
+  --save-dir results/kd_tuning_official_5k/v35_concat_source_embed_v22loss \
+  --input-preset visual_text_sound \
+  --epochs 80 \
+  --batch 32 \
+  --eval-batch 128 \
   --hidden-dim 96 \
   --layers 1 \
   --heads 4 \
   --dropout 0.22 \
-  --lr 4e-4 \
-  --weight-decay 0.03 \
+  --lr 5e-4 \
+  --weight-decay 0.01 \
   --repr-loss cosine \
   --soft-weight 1.1 \
   --clip-weight 0.08 \
   --temporal-weight 0.02 \
   --fusion-weight 0.02 \
   --attention-weight 0.005 \
-  --hard-rank-weight 0.02 \
-  --teacher-rank-weight 0.12
+  --hard-rank-weight 0.04 \
+  --teacher-rank-weight 0.18 \
+  --teacher-pearson-weight 0.02 \
+  --teacher-spearman-weight 0.015 \
+  --teacher-listwise-weight 0.02 \
+  --rank-temperature 0.15 \
+  --soft-rank-temperature 0.08
 ```
 
 See `docs/student_kd_architecture.md` for the student baseline/KD diagram,
@@ -344,11 +357,10 @@ input presets, and KD losses.
 The report includes PLCC, SRCC, KRCC, MSE, MAE, and
 `final_score = 0.6 * SRCC + 0.4 * PLCC`.
 
-## Locked 5k Result
+## Retained 5k Results
 
-The current thesis baseline is the official SnapUGC teacher run on the fixed
-balanced 5000-video subset, followed by the `visual_text` student baseline and
-artifact KD run.
+The repo now keeps only the current deployable KD student and one upper-bound
+compressed student under `results/kd_tuning_official_5k/`.
 
 ```text
 Official teacher, full 5000 eval:
@@ -357,15 +369,20 @@ SRCC  = 0.7075
 Final = 0.7103
 
 Fair 1000-video validation split:
-Teacher          Final = 0.7038
-Student baseline Final = 0.5054
-Student KD       Final = 0.5429
-KD gain          Final = +0.0375
-
-Tuned compact student on the same split:
-Student baseline Final = 0.5125
-Student KD       Final = 0.5800
-KD gain          Final = +0.0675
+Teacher                         Final = 0.7038
+Deployable KD student            Final = 0.6027
+Compressed teacher-token student Final = 0.6947
 ```
 
-See `docs/locked_5k_results.md` for exact paths and metrics.
+| Version | Input preset | Params | Final | Note |
+|---|---|---:|---:|---|
+| `v35_concat_source_embed_v22loss` | `visual_text_sound` | 383,652 | 0.6027 | deployable KD student |
+| `upper_teacher_compressed_tokens_baseline` | `teacher_compressed_tokens` | 712,068 | 0.6947 | upper-bound, not deployable without teacher-like compressed tokens |
+
+`visual_text_sound` does not use raw audio embeddings. It uses the same
+audio-derived representation as the official teacher: YAMNet top-5 sound labels
+encoded by the Stable Diffusion/CLIP text encoder and saved as
+`text_pooled[0]`.
+
+See `docs/student_kd_architecture.md` for exact inputs, architecture, losses,
+commands, and interpretation.

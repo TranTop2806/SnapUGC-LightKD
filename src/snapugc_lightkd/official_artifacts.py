@@ -1,77 +1,82 @@
-"""Dataset utilities for official SnapUGC teacher artifact shards."""
+"""Dataset utilities for the two retained official-artifact students."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-
 RAGGED_KEYS = (
     "clip_ecr",
     "fusion_hidden",
     "temporal_hidden",
-    "caption_feature",
-    "action_feature",
     "frame_fusion_feature",
     "text_tokens",
     "text_pooled",
-    "attention_mean",
     "attention_importance",
+    "action_feature",
+    "caption_feature",
 )
 
-DEFAULT_STUDENT_RAGGED_KEYS = (
-    "clip_ecr",
-    "fusion_hidden",
-    "temporal_hidden",
-    "frame_fusion_feature",
-    "text_pooled",
-    "attention_importance",
-)
+DEFAULT_RAGGED_KEYS = RAGGED_KEYS
 
 
 @dataclass(frozen=True)
 class StudentInputConfig:
-    """Which teacher-extracted features the student may use as input."""
+    """Select the retained student input interface."""
 
-    use_frame_fusion: bool = True
-    use_action: bool = False
-    use_caption_feature: bool = False
+    preset: str
+    use_frame_fusion: bool
     use_sound_text: bool = False
-    use_title_text: bool = True
-    use_description_text: bool = True
-    use_caption_text: bool = False
+    use_title_text: bool = False
+    use_description_text: bool = False
+    use_text_tokens: bool = False
+    use_quality_features: bool = False
+    quality_feature_dim: int = 0
+    use_teacher_compressed_tokens: bool = False
 
     @classmethod
-    def from_preset(cls, preset: str) -> "StudentInputConfig":
+    def from_preset(cls, preset: str) -> StudentInputConfig:
         presets = {
-            "visual_text": cls(),
-            "visual_only": cls(use_title_text=False, use_description_text=False),
-            "visual_text_action": cls(use_action=True),
-            "visual_text_sound": cls(use_sound_text=True),
-            "privileged": cls(
-                use_action=True,
-                use_caption_feature=True,
+            "visual_text_sound": cls(
+                preset="visual_text_sound",
+                use_frame_fusion=True,
                 use_sound_text=True,
-                use_caption_text=True,
+                use_title_text=True,
+                use_description_text=True,
+            ),
+            "teacher_compressed_tokens": cls(
+                preset="teacher_compressed_tokens",
+                use_frame_fusion=False,
+                use_teacher_compressed_tokens=True,
             ),
         }
         if preset not in presets:
             raise ValueError(f"Unknown student input preset {preset!r}. Choices: {sorted(presets)}")
         return presets[preset]
 
+    def with_text_tokens(self, enabled: bool) -> StudentInputConfig:
+        return replace(self, use_text_tokens=enabled)
+
+    def with_quality_features(self, enabled: bool, dim: int = 0) -> StudentInputConfig:
+        return replace(
+            self,
+            use_quality_features=enabled,
+            quality_feature_dim=dim if enabled else 0,
+        )
+
 
 def artifact_keys_for_input_config(config: StudentInputConfig) -> tuple[str, ...]:
-    keys = set(DEFAULT_STUDENT_RAGGED_KEYS)
-    if config.use_action:
-        keys.add("action_feature")
-    if config.use_caption_feature:
-        keys.add("caption_feature")
+    keys = {"clip_ecr", "fusion_hidden", "temporal_hidden", "attention_importance"}
+    if config.use_frame_fusion:
+        keys.add("frame_fusion_feature")
+    if config.use_sound_text or config.use_title_text or config.use_description_text:
+        keys.add("text_tokens" if config.use_text_tokens else "text_pooled")
     return tuple(key for key in RAGGED_KEYS if key in keys)
 
 
@@ -103,10 +108,8 @@ def load_official_artifact_rows(
     labels_csv: str | Path,
     *,
     require_complete_labels: bool = True,
-    ragged_keys: Iterable[str] = DEFAULT_STUDENT_RAGGED_KEYS,
+    ragged_keys: Iterable[str] = DEFAULT_RAGGED_KEYS,
 ) -> list[dict[str, object]]:
-    """Load all official teacher artifact shards and attach true ECR labels."""
-
     artifact_dir = Path(artifact_dir)
     shard_paths = sorted(artifact_dir.glob("official_teacher_artifacts_*.npz"))
     if not shard_paths:
@@ -179,16 +182,75 @@ def _select_text_pooled(text_pooled: np.ndarray, config: StudentInputConfig) -> 
         indices.append(1)
     if config.use_description_text:
         indices.append(2)
-    if config.use_caption_text:
-        indices.append(3)
     valid = [idx for idx in indices if idx < len(text_pooled)]
     if not valid:
         return np.zeros((0, 768), dtype=np.float32)
     return text_pooled[valid].astype(np.float32, copy=False)
 
 
+def _select_text_tokens(text_tokens: np.ndarray, config: StudentInputConfig) -> np.ndarray:
+    if text_tokens.size == 0:
+        return np.zeros((0, 768), dtype=np.float32)
+    if text_tokens.ndim == 2:
+        text_tokens = text_tokens.reshape(1, *text_tokens.shape)
+    text_tokens = text_tokens.reshape(text_tokens.shape[0], text_tokens.shape[1], -1)
+    indices = []
+    if config.use_sound_text:
+        indices.append(0)
+    if config.use_title_text:
+        indices.append(1)
+    if config.use_description_text:
+        indices.append(2)
+    valid = [idx for idx in indices if idx < len(text_tokens)]
+    if not valid:
+        return np.zeros((0, 768), dtype=np.float32)
+    selected = text_tokens[valid, :, :768]
+    return selected.reshape(-1, 768).astype(np.float32, copy=False)
+
+
+def _stats_token(array: np.ndarray, dim: int) -> np.ndarray:
+    array = _ensure_2d(array, dim)
+    if array.size == 0:
+        return np.zeros((1, dim * 4), dtype=np.float32)
+    return np.concatenate(
+        [array.mean(axis=0), array.std(axis=0), array.min(axis=0), array.max(axis=0)]
+    ).reshape(1, -1).astype(np.float32, copy=False)
+
+
+def _scalar_stats_token(array: np.ndarray) -> np.ndarray:
+    values = np.asarray(array, dtype=np.float32).reshape(-1)
+    if values.size == 0:
+        return np.zeros((1, 4), dtype=np.float32)
+    return np.asarray(
+        [values.mean(), values.std(), values.min(), values.max()],
+        dtype=np.float32,
+    ).reshape(1, -1)
+
+
+def _build_compressed_teacher_tokens(row: dict[str, object]) -> np.ndarray:
+    temporal = _stats_token(row["temporal_hidden"], 512)
+    fusion = _stats_token(row["fusion_hidden"], 512)
+    clip_ecr = _scalar_stats_token(row["clip_ecr"])
+    attention = _scalar_stats_token(np.asarray(row["attention_importance"], dtype=np.float32))
+    scalar_stats = np.concatenate([clip_ecr, attention], axis=-1)
+    scalar_stats = np.pad(scalar_stats, ((0, 0), (0, temporal.shape[-1] - scalar_stats.shape[-1])))
+    return np.concatenate([temporal, fusion, scalar_stats], axis=0).astype(
+        np.float32,
+        copy=False,
+    )
+
+
+def _attention_vector(row: dict[str, object], length: int) -> np.ndarray:
+    teacher_attention = _ensure_2d(row["attention_importance"], length)
+    if teacher_attention.size > 0:
+        teacher_attention = teacher_attention[:, :length].mean(axis=0)
+    else:
+        teacher_attention = np.ones((length,), dtype=np.float32) / max(length, 1)
+    return _fit_1d(teacher_attention, length)
+
+
 class OfficialTeacherArtifactDataset(Dataset):
-    """Student training dataset built from official teacher artifacts."""
+    """Dataset for the retained deployable and upper-bound students."""
 
     def __init__(
         self,
@@ -201,7 +263,6 @@ class OfficialTeacherArtifactDataset(Dataset):
         self.input_config = input_config
         self.max_clips = max_clips
         self.clip_dim = self._infer_clip_dim()
-        self.text_dim = 768
 
     def _infer_clip_dim(self) -> int:
         for row in self.rows:
@@ -211,14 +272,22 @@ class OfficialTeacherArtifactDataset(Dataset):
         raise RuntimeError("Could not infer student clip input dimension")
 
     def _clip_pieces(self, row: dict[str, object]) -> list[np.ndarray]:
+        if self.input_config.use_teacher_compressed_tokens:
+            return [_build_compressed_teacher_tokens(row)]
         pieces = []
         if self.input_config.use_frame_fusion:
             pieces.append(_ensure_2d(row["frame_fusion_feature"], 1024))
-        if self.input_config.use_action:
-            pieces.append(_ensure_2d(row["action_feature"], 512))
-        if self.input_config.use_caption_feature:
-            pieces.append(_ensure_2d(row["caption_feature"], 1024))
-        return [piece for piece in pieces if piece.size > 0]
+        if self.input_config.use_quality_features:
+            pieces.append(
+                _ensure_2d(
+                    row.get(
+                        "quality_features",
+                        np.zeros((0, self.input_config.quality_feature_dim), dtype=np.float32),
+                    ),
+                    self.input_config.quality_feature_dim,
+                )
+            )
+        return pieces
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -234,16 +303,26 @@ class OfficialTeacherArtifactDataset(Dataset):
             raise RuntimeError(f"Zero-length student clip input for {row['Id']}")
         clip_inputs = np.concatenate([piece[:min_len] for piece in pieces], axis=-1)
 
-        text_inputs = _select_text_pooled(row["text_pooled"], self.input_config)
+        if self.input_config.use_text_tokens:
+            text_inputs = _select_text_tokens(
+                row.get("text_tokens", np.zeros((0,))),
+                self.input_config,
+            )
+        else:
+            text_inputs = _select_text_pooled(
+                row.get("text_pooled", np.zeros((0,))),
+                self.input_config,
+            )
         teacher_temporal = _fit_2d(row["temporal_hidden"], min_len, 512)
         teacher_fusion = _fit_2d(row["fusion_hidden"], min_len, 512)
+        teacher_action = _fit_2d(row.get("action_feature", np.zeros((0,))), min_len, 512)
+        teacher_caption_feature = _fit_2d(
+            row.get("caption_feature", np.zeros((0,))),
+            min_len,
+            1024,
+        )
         teacher_clip_ecr = _fit_1d(row["clip_ecr"], min_len)
-        teacher_attention = _ensure_2d(row["attention_importance"], min_len)
-        if teacher_attention.size > 0:
-            teacher_attention = teacher_attention[:, :min_len].mean(axis=0)
-        else:
-            teacher_attention = np.ones((min_len,), dtype=np.float32) / max(min_len, 1)
-        teacher_attention = _fit_1d(teacher_attention, min_len)
+        teacher_attention = _attention_vector(row, min_len)
 
         return {
             "Id": row["Id"],
@@ -253,6 +332,10 @@ class OfficialTeacherArtifactDataset(Dataset):
             "teacher_ecr": torch.tensor(float(row["teacher_ecr"]), dtype=torch.float32),
             "teacher_temporal": torch.from_numpy(teacher_temporal.astype(np.float32, copy=False)),
             "teacher_fusion": torch.from_numpy(teacher_fusion.astype(np.float32, copy=False)),
+            "teacher_action": torch.from_numpy(teacher_action.astype(np.float32, copy=False)),
+            "teacher_caption_feature": torch.from_numpy(
+                teacher_caption_feature.astype(np.float32, copy=False)
+            ),
             "teacher_clip_ecr": torch.from_numpy(teacher_clip_ecr.astype(np.float32, copy=False)),
             "teacher_attention": torch.from_numpy(teacher_attention.astype(np.float32, copy=False)),
         }
@@ -288,6 +371,8 @@ def collate_student_batch(batch: Iterable[dict[str, object]]) -> dict[str, objec
     text_mask = torch.zeros(batch_size, max_text, dtype=torch.bool)
     teacher_temporal = torch.zeros(batch_size, max_clips, 512)
     teacher_fusion = torch.zeros(batch_size, max_clips, 512)
+    teacher_action = torch.zeros(batch_size, max_clips, 512)
+    teacher_caption_feature = torch.zeros(batch_size, max_clips, 1024)
     teacher_clip_ecr = torch.zeros(batch_size, max_clips)
     teacher_attention = torch.zeros(batch_size, max_clips)
 
@@ -303,6 +388,8 @@ def collate_student_batch(batch: Iterable[dict[str, object]]) -> dict[str, objec
             text_mask[i, :n_text] = True
         teacher_temporal[i, :n_clips] = item["teacher_temporal"][:n_clips]
         teacher_fusion[i, :n_clips] = item["teacher_fusion"][:n_clips]
+        teacher_action[i, :n_clips] = item["teacher_action"][:n_clips]
+        teacher_caption_feature[i, :n_clips] = item["teacher_caption_feature"][:n_clips]
         teacher_clip_ecr[i, :n_clips] = item["teacher_clip_ecr"][:n_clips]
         attn = item["teacher_attention"][:n_clips]
         teacher_attention[i, :n_clips] = attn / attn.sum().clamp_min(1e-6)
@@ -317,6 +404,8 @@ def collate_student_batch(batch: Iterable[dict[str, object]]) -> dict[str, objec
         "teacher_ecr": torch.stack([item["teacher_ecr"] for item in items]),
         "teacher_temporal": teacher_temporal,
         "teacher_fusion": teacher_fusion,
+        "teacher_action": teacher_action,
+        "teacher_caption_feature": teacher_caption_feature,
         "teacher_clip_ecr": teacher_clip_ecr,
         "teacher_attention": teacher_attention,
     }
