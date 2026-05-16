@@ -38,6 +38,8 @@ class StudentInputConfig:
     use_text_tokens: bool = False
     use_quality_features: bool = False
     quality_feature_dim: int = 0
+    use_dover_features: bool = False
+    dover_feature_dim: int = 0
     use_teacher_compressed_tokens: bool = False
 
     @classmethod
@@ -68,6 +70,13 @@ class StudentInputConfig:
             self,
             use_quality_features=enabled,
             quality_feature_dim=dim if enabled else 0,
+        )
+
+    def with_dover_features(self, enabled: bool, dim: int = 0) -> StudentInputConfig:
+        return replace(
+            self,
+            use_dover_features=enabled,
+            dover_feature_dim=dim if enabled else 0,
         )
 
 
@@ -285,6 +294,16 @@ class OfficialTeacherArtifactDataset(Dataset):
                         np.zeros((0, self.input_config.quality_feature_dim), dtype=np.float32),
                     ),
                     self.input_config.quality_feature_dim,
+                )
+            )
+        if self.input_config.use_dover_features:
+            pieces.append(
+                _ensure_2d(
+                    row.get(
+                        "dover_features",
+                        np.zeros((0, self.input_config.dover_feature_dim), dtype=np.float32),
+                    ),
+                    self.input_config.dover_feature_dim,
                 )
             )
         return pieces

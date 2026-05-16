@@ -80,6 +80,33 @@ def attach_quality_features(
     return int(features.shape[-1])
 
 
+def attach_dover_features(
+    rows: list[dict[str, object]],
+    dover_path: str | None,
+) -> int:
+    if not dover_path:
+        return 0
+    with np.load(dover_path) as npz:
+        ids = [str(value) for value in npz["ids"]]
+        # Build feature vector: technical_score, aesthetic_score, technical_feature, aesthetic_feature
+        tech_score = npz["technical_score"].astype(np.float32).reshape(-1, 1)
+        aest_score = npz["aesthetic_score"].astype(np.float32).reshape(-1, 1)
+        tech_feat = npz["technical_feature"].astype(np.float32).reshape(-1, 768)
+        aest_feat = npz["aesthetic_feature"].astype(np.float32).reshape(-1, 768)
+        features = np.concatenate([tech_score, aest_score, tech_feat, aest_feat], axis=-1)
+    dover_by_id = {video_id: features[idx] for idx, video_id in enumerate(ids)}
+    missing = 0
+    for row in rows:
+        feature = dover_by_id.get(str(row["Id"]))
+        if feature is None:
+            missing += 1
+            feature = np.zeros((0, features.shape[-1]), dtype=np.float32)
+        row["dover_features"] = feature
+    if missing:
+        print(f"Warning: missing DOVER features for {missing} rows", flush=True)
+    return int(features.shape[-1])
+
+
 @torch.no_grad()
 def evaluate(model, loader, device: torch.device) -> dict[str, float]:
     model.eval()
@@ -224,6 +251,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-hallucination", action="store_true")
     parser.add_argument("--use-text-tokens", action="store_true")
     parser.add_argument("--quality-features")
+    parser.add_argument("--dover-features")
     parser.add_argument("--temporal-conv", choices=("none", "depthwise", "full"), default="none")
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--batch", type=int, default=32)
@@ -283,6 +311,8 @@ def main() -> None:
     )
     quality_dim = attach_quality_features(rows, args.quality_features)
     input_config = input_config.with_quality_features(bool(args.quality_features), quality_dim)
+    dover_dim = attach_dover_features(rows, args.dover_features)
+    input_config = input_config.with_dover_features(bool(args.dover_features), dover_dim)
     train_rows, val_rows = split_rows(rows, val_ratio=args.val_ratio, seed=split_seed)
     train_dataset = OfficialTeacherArtifactDataset(
         train_rows,
