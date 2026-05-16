@@ -39,3 +39,4 @@ wandb/
 
 # Local dataset symlinks
 data/train_videos
+third_party/DOVER/
