@@ -28,9 +28,28 @@ extraction = [
   "tensorflow-hub>=0.16",
 ]
 notebook = ["jupyter", "matplotlib"]
+dev = ["ruff>=0.8.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.ruff]
 line-length = 100
+target-version = "py39"
+extend-exclude = [
+  "data",
+  "results",
+  "third_party",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "UP",
+  "B",
+]
+ignore = [
+  "E501",
+]
