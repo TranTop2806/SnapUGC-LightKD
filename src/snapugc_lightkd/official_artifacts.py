@@ -38,8 +38,10 @@ class StudentInputConfig:
     use_text_tokens: bool = False
     use_quality_features: bool = False
     quality_feature_dim: int = 0
+    quality_fusion: str = "input_concat"
     use_dover_features: bool = False
     dover_feature_dim: int = 0
+    dover_fusion: str = "input_concat"
     use_teacher_compressed_tokens: bool = False
 
     @classmethod
@@ -65,18 +67,30 @@ class StudentInputConfig:
     def with_text_tokens(self, enabled: bool) -> StudentInputConfig:
         return replace(self, use_text_tokens=enabled)
 
-    def with_quality_features(self, enabled: bool, dim: int = 0) -> StudentInputConfig:
+    def with_quality_features(
+        self,
+        enabled: bool,
+        dim: int = 0,
+        fusion: str = "input_concat",
+    ) -> StudentInputConfig:
         return replace(
             self,
             use_quality_features=enabled,
             quality_feature_dim=dim if enabled else 0,
+            quality_fusion=fusion if enabled else "input_concat",
         )
 
-    def with_dover_features(self, enabled: bool, dim: int = 0) -> StudentInputConfig:
+    def with_dover_features(
+        self,
+        enabled: bool,
+        dim: int = 0,
+        fusion: str = "input_concat",
+    ) -> StudentInputConfig:
         return replace(
             self,
             use_dover_features=enabled,
             dover_feature_dim=dim if enabled else 0,
+            dover_fusion=fusion if enabled else "input_concat",
         )
 
 
@@ -170,6 +184,13 @@ def _fit_2d(array: np.ndarray, length: int, dim: int) -> np.ndarray:
     d = min(dim, array.shape[1])
     fitted[:n, :d] = array[:n, :d]
     return fitted
+
+
+def _repeat_or_fit_2d(array: np.ndarray, length: int, dim: int) -> np.ndarray:
+    array = _ensure_2d(array, dim)
+    if array.shape[0] == 1 and length > 1:
+        array = np.repeat(array, length, axis=0)
+    return _fit_2d(array, length, dim)
 
 
 def _fit_1d(array: np.ndarray, length: int) -> np.ndarray:
@@ -267,10 +288,12 @@ class OfficialTeacherArtifactDataset(Dataset):
         input_config: StudentInputConfig,
         *,
         max_clips: int = 16,
+        clip_offset: int = 0,
     ):
         self.rows = rows
         self.input_config = input_config
         self.max_clips = max_clips
+        self.clip_offset = max(0, clip_offset)
         self.clip_dim = self._infer_clip_dim()
 
     def _infer_clip_dim(self) -> int:
@@ -284,25 +307,33 @@ class OfficialTeacherArtifactDataset(Dataset):
         if self.input_config.use_teacher_compressed_tokens:
             return [_build_compressed_teacher_tokens(row)]
         pieces = []
+        frame_length = 0
         if self.input_config.use_frame_fusion:
-            pieces.append(_ensure_2d(row["frame_fusion_feature"], 1024))
-        if self.input_config.use_quality_features:
+            frame_piece = _ensure_2d(row["frame_fusion_feature"], 1024)
+            frame_length = frame_piece.shape[0]
+            pieces.append(frame_piece)
+        if (
+            self.input_config.use_quality_features
+            and self.input_config.quality_fusion == "input_concat"
+        ):
             pieces.append(
-                _ensure_2d(
+                _repeat_or_fit_2d(
                     row.get(
                         "quality_features",
                         np.zeros((0, self.input_config.quality_feature_dim), dtype=np.float32),
                     ),
+                    frame_length,
                     self.input_config.quality_feature_dim,
                 )
             )
-        if self.input_config.use_dover_features:
+        if self.input_config.use_dover_features and self.input_config.dover_fusion == "input_concat":
             pieces.append(
-                _ensure_2d(
+                _repeat_or_fit_2d(
                     row.get(
                         "dover_features",
                         np.zeros((0, self.input_config.dover_feature_dim), dtype=np.float32),
                     ),
+                    frame_length,
                     self.input_config.dover_feature_dim,
                 )
             )
@@ -316,11 +347,12 @@ class OfficialTeacherArtifactDataset(Dataset):
         pieces = self._clip_pieces(row)
         if not pieces:
             raise RuntimeError(f"No student clip inputs available for {row['Id']}")
-        min_len = min(piece.shape[0] for piece in pieces)
-        min_len = min(min_len, self.max_clips)
+        total_len = min(piece.shape[0] for piece in pieces)
+        start = min(self.clip_offset, max(0, total_len - self.max_clips))
+        min_len = min(total_len - start, self.max_clips)
         if min_len <= 0:
             raise RuntimeError(f"Zero-length student clip input for {row['Id']}")
-        clip_inputs = np.concatenate([piece[:min_len] for piece in pieces], axis=-1)
+        clip_inputs = np.concatenate([piece[start : start + min_len] for piece in pieces], axis=-1)
 
         if self.input_config.use_text_tokens:
             text_inputs = _select_text_tokens(
@@ -332,23 +364,64 @@ class OfficialTeacherArtifactDataset(Dataset):
                 row.get("text_pooled", np.zeros((0,))),
                 self.input_config,
             )
-        teacher_temporal = _fit_2d(row["temporal_hidden"], min_len, 512)
-        teacher_fusion = _fit_2d(row["fusion_hidden"], min_len, 512)
-        teacher_action = _fit_2d(row.get("action_feature", np.zeros((0,))), min_len, 512)
+        teacher_temporal = _fit_2d(
+            _ensure_2d(row["temporal_hidden"], 512)[start : start + min_len],
+            min_len,
+            512,
+        )
+        teacher_fusion = _fit_2d(
+            _ensure_2d(row["fusion_hidden"], 512)[start : start + min_len],
+            min_len,
+            512,
+        )
+        teacher_action = _fit_2d(
+            _ensure_2d(row.get("action_feature", np.zeros((0,))), 512)[start : start + min_len],
+            min_len,
+            512,
+        )
         teacher_caption_feature = _fit_2d(
-            row.get("caption_feature", np.zeros((0,))),
+            _ensure_2d(row.get("caption_feature", np.zeros((0,))), 1024)[
+                start : start + min_len
+            ],
             min_len,
             1024,
         )
-        teacher_clip_ecr = _fit_1d(row["clip_ecr"], min_len)
-        teacher_attention = _attention_vector(row, min_len)
+        teacher_clip_ecr = _fit_1d(np.asarray(row["clip_ecr"])[start : start + min_len], min_len)
+        teacher_attention = _attention_vector(row, total_len)[start : start + min_len]
+        dover_inputs = _ensure_2d(
+            row.get(
+                "dover_features",
+                np.zeros((0, self.input_config.dover_feature_dim), dtype=np.float32),
+            ),
+            self.input_config.dover_feature_dim,
+        )
+        if dover_inputs.shape[0] > 1:
+            dover_inputs = dover_inputs[:1]
+        elif dover_inputs.size == 0:
+            dover_inputs = np.zeros((1, self.input_config.dover_feature_dim), dtype=np.float32)
+        quality_inputs = _repeat_or_fit_2d(
+            row.get(
+                "quality_features",
+                np.zeros((0, self.input_config.quality_feature_dim), dtype=np.float32),
+            ),
+            total_len,
+            self.input_config.quality_feature_dim,
+        )[start : start + min_len]
 
         return {
             "Id": row["Id"],
             "clip_inputs": torch.from_numpy(clip_inputs.astype(np.float32, copy=False)),
+            "quality_inputs": torch.from_numpy(quality_inputs.astype(np.float32, copy=False)),
+            "dover_inputs": torch.from_numpy(
+                dover_inputs.reshape(-1).astype(np.float32, copy=False)
+            ),
             "text_inputs": torch.from_numpy(text_inputs.astype(np.float32, copy=False)),
             "ecr_true": torch.tensor(float(row["ecr_true"]), dtype=torch.float32),
             "teacher_ecr": torch.tensor(float(row["teacher_ecr"]), dtype=torch.float32),
+            "pseudo_ecr": torch.tensor(
+                float(row.get("pseudo_ecr", row["teacher_ecr"])),
+                dtype=torch.float32,
+            ),
             "teacher_temporal": torch.from_numpy(teacher_temporal.astype(np.float32, copy=False)),
             "teacher_fusion": torch.from_numpy(teacher_fusion.astype(np.float32, copy=False)),
             "teacher_action": torch.from_numpy(teacher_action.astype(np.float32, copy=False)),
@@ -388,6 +461,10 @@ def collate_student_batch(batch: Iterable[dict[str, object]]) -> dict[str, objec
     clip_mask = torch.zeros(batch_size, max_clips, dtype=torch.bool)
     text_inputs = torch.zeros(batch_size, max_text, text_dim)
     text_mask = torch.zeros(batch_size, max_text, dtype=torch.bool)
+    dover_dim = int(items[0]["dover_inputs"].numel())
+    dover_inputs = torch.zeros(batch_size, dover_dim)
+    quality_dim = int(items[0]["quality_inputs"].shape[-1])
+    quality_inputs = torch.zeros(batch_size, max_clips, quality_dim)
     teacher_temporal = torch.zeros(batch_size, max_clips, 512)
     teacher_fusion = torch.zeros(batch_size, max_clips, 512)
     teacher_action = torch.zeros(batch_size, max_clips, 512)
@@ -405,6 +482,10 @@ def collate_student_batch(batch: Iterable[dict[str, object]]) -> dict[str, objec
         if n_text:
             text_inputs[i, :n_text] = item["text_inputs"]
             text_mask[i, :n_text] = True
+        if dover_dim:
+            dover_inputs[i] = item["dover_inputs"][:dover_dim]
+        if quality_dim:
+            quality_inputs[i, :n_clips] = item["quality_inputs"][:n_clips]
         teacher_temporal[i, :n_clips] = item["teacher_temporal"][:n_clips]
         teacher_fusion[i, :n_clips] = item["teacher_fusion"][:n_clips]
         teacher_action[i, :n_clips] = item["teacher_action"][:n_clips]
@@ -419,8 +500,11 @@ def collate_student_batch(batch: Iterable[dict[str, object]]) -> dict[str, objec
         "clip_mask": clip_mask,
         "text_inputs": text_inputs,
         "text_mask": text_mask,
+        "quality_inputs": quality_inputs,
+        "dover_inputs": dover_inputs,
         "ecr_true": torch.stack([item["ecr_true"] for item in items]),
         "teacher_ecr": torch.stack([item["teacher_ecr"] for item in items]),
+        "pseudo_ecr": torch.stack([item["pseudo_ecr"] for item in items]),
         "teacher_temporal": teacher_temporal,
         "teacher_fusion": teacher_fusion,
         "teacher_action": teacher_action,
