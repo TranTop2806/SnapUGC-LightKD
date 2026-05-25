@@ -85,6 +85,7 @@ def scheduled_kd_weights(
                 "teacher_spearman",
                 "teacher_listwise",
                 "hard_ldl",
+                "spkd",
             ):
                 scheduled[key] = 0.0
             scheduled["soft_ecr"] = weights.get("soft_ecr", 0.0)
@@ -105,6 +106,7 @@ def scheduled_kd_weights(
                 "teacher_spearman",
                 "teacher_listwise",
                 "hard_ldl",
+                "spkd",
             ):
                 scheduled[key] = ease * weights.get(key, 0.0)
         else:
@@ -122,6 +124,7 @@ def scheduled_kd_weights(
                 "teacher_spearman",
                 "teacher_listwise",
                 "teacher_ldl",
+                "spkd",
             ):
                 scheduled[key] = (1.0 - ease) * weights.get(key, 0.0)
             scheduled["hard_ldl"] = weights.get("hard_ldl", 0.0)
@@ -461,6 +464,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hard-prototype-weight", type=float, default=0.0)
     parser.add_argument("--rkd-distance-weight", type=float, default=0.0)
     parser.add_argument("--contrastive-hidden-weight", type=float, default=0.0)
+    parser.add_argument("--spkd-weight", type=float, default=0.0)
     parser.add_argument("--action-hallucination-weight", type=float, default=0.0)
     parser.add_argument("--caption-hallucination-weight", type=float, default=0.0)
     parser.add_argument("--rank-temperature", type=float, default=0.15)
@@ -632,6 +636,7 @@ def main() -> None:
         "hard_prototype": args.hard_prototype_weight,
         "rkd_distance": args.rkd_distance_weight,
         "contrastive_hidden": args.contrastive_hidden_weight,
+        "spkd": args.spkd_weight,
         "action_hallucination": args.action_hallucination_weight,
         "caption_hallucination": args.caption_hallucination_weight,
     }

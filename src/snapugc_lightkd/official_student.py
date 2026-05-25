@@ -759,6 +759,29 @@ def contrastive_hidden_loss(
     return 0.5 * (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels))
 
 
+def similarity_preserving_loss(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+) -> torch.Tensor:
+    if student.size(0) < 2:
+        return student.sum() * 0.0
+    if student.ndim > 2:
+        student = student.flatten(start_dim=1)
+    if teacher.ndim > 2:
+        teacher = teacher.flatten(start_dim=1)
+    
+    s_norm = F.normalize(student, p=2, dim=-1)
+    t_norm = F.normalize(teacher.detach(), p=2, dim=-1)
+    
+    G_s = s_norm @ s_norm.T
+    G_t = t_norm @ t_norm.T
+    
+    G_s_norm = F.normalize(G_s, p=2, dim=-1)
+    G_t_norm = F.normalize(G_t, p=2, dim=-1)
+    
+    return F.mse_loss(G_s_norm, G_t_norm, reduction="mean")
+
+
 def compute_losses(
     outputs: dict[str, torch.Tensor],
     batch: dict[str, torch.Tensor],
@@ -985,6 +1008,12 @@ def compute_losses(
                 batch["teacher_caption_feature"],
                 batch["clip_mask"],
                 mode=repr_loss,
+            )
+
+        if weights.get("spkd", 0.0):
+            optional_losses["spkd"] = similarity_preserving_loss(
+                outputs["student_hidden"],
+                fusion_target,
             )
 
         losses.update(
