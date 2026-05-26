@@ -112,10 +112,12 @@ def artifact_keys_for_input_config(config: StudentInputConfig) -> tuple[str, ...
     return tuple(key for key in RAGGED_KEYS if key in keys)
 
 
-def _read_labels(csv_path: str | Path) -> dict[str, float]:
+def _read_labels(csv_path: str | Path, *, require_ecr: bool = True) -> dict[str, float]:
     df = pd.read_csv(csv_path)
-    if not {"Id", "ECR"}.issubset(df.columns):
+    if "Id" not in df.columns or (require_ecr and "ECR" not in df.columns):
         raise ValueError(f"{csv_path} must contain Id and ECR columns")
+    if "ECR" not in df.columns:
+        return {}
     return {str(row.Id): float(row.ECR) for row in df.itertuples(index=False)}
 
 
@@ -150,7 +152,7 @@ def load_official_artifact_rows(
     if not shard_paths:
         raise FileNotFoundError(f"No official_teacher_artifacts_*.npz files under {artifact_dir}")
 
-    labels = _read_labels(labels_csv)
+    labels = _read_labels(labels_csv, require_ecr=require_complete_labels)
     rows: list[dict[str, object]] = []
     seen: set[str] = set()
     for shard_path in shard_paths:
@@ -164,11 +166,13 @@ def load_official_artifact_rows(
                 if video_id not in labels:
                     if require_complete_labels:
                         raise KeyError(f"Missing ECR label for {video_id}")
-                    continue
+                    ecr_true = float("nan")
+                else:
+                    ecr_true = float(labels[video_id])
                 row: dict[str, object] = {
                     "Id": video_id,
                     "order_idx": int(order_idx[i]),
-                    "ecr_true": float(labels[video_id]),
+                    "ecr_true": ecr_true,
                     "teacher_ecr": float(teacher_ecr[i]),
                 }
                 for key in ragged_keys:
