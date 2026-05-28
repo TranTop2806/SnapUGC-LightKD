@@ -23,13 +23,18 @@ from snapugc_lightkd.explanations import (  # noqa: E402
     explain_student_prediction,
     move_batch,
 )
+from snapugc_lightkd.llm_explainer import (  # noqa: E402
+    build_semantic_llm_input,
+    generate_semantic_explanation,
+)
 from snapugc_lightkd.official_student import OfficialArtifactStudent  # noqa: E402
 from snapugc_lightkd.student_native import (  # noqa: E402
     build_native_student_inputs,
-    build_native_concept_bottleneck,
     build_recommendations,
+    build_semantic_attributes,
     save_top_clip_thumbnails,
     semantic_clip_label,
+    semantic_clip_profile,
 )
 
 
@@ -75,6 +80,12 @@ def main() -> None:
     parser.add_argument("--max-clips", type=int, default=None)
     parser.add_argument("--efficientnet-weights", default=None)
     parser.add_argument("--no-visual-encoder", action="store_true")
+    parser.add_argument("--explanation-language", default="vi", choices=["vi", "en"])
+    parser.add_argument(
+        "--disable-llm",
+        action="store_true",
+        help="Use deterministic template explanation even if an LLM API key is configured.",
+    )
     parser.add_argument("--out-json", default=None)
     parser.add_argument("--assets-dir", default=None)
     args = parser.parse_args()
@@ -145,18 +156,18 @@ def main() -> None:
     )
 
     clip_metrics = [clip.metrics for clip in native.clips]
-    clip_semantics = {
-        clip.index: semantic_clip_label(clip.metrics)
-        for clip in native.clips
-    }
+    clip_semantics = {clip.index: semantic_clip_label(clip.metrics) for clip in native.clips}
+    clip_profiles = {clip.index: semantic_clip_profile(clip.metrics) for clip in native.clips}
     for row in result["evidence"]["all_clips"]:
         idx = int(row["clip_index"])
         row["semantic_label"] = clip_semantics.get(idx)
+        row["semantic_profile"] = clip_profiles.get(idx)
         if 0 <= idx < len(clip_metrics):
             row["native_visual_metrics"] = clip_metrics[idx]
     for row in result["evidence"]["top_clips"]:
         idx = int(row["clip_index"])
         row["semantic_label"] = clip_semantics.get(idx)
+        row["semantic_profile"] = clip_profiles.get(idx)
         if 0 <= idx < len(clip_metrics):
             row["native_visual_metrics"] = clip_metrics[idx]
 
@@ -164,37 +175,74 @@ def main() -> None:
     result["scores"]["native_heuristic_ecr"] = native.heuristic_score
     result["scores"]["student_ecr"] = student_ecr
     result["scores"]["band"] = engagement_band(student_ecr, reference_values)
-    result["nla_style_explanation"]["summary"] = build_student_summary(result)
-    result["nla_style_explanation"]["claims"] = build_student_claims(result)
-    result["nla_style_explanation"]["limitations"] = (
-        "Student-only explanation: teacher model khong duoc goi o inference. "
-        "Do native video features khac distribution artifact teacher, nen score demo "
-        "nen duoc validate/calibrate them neu dua vao production."
-    )
-    result["recommendations"] = build_recommendations(
+    recommendations = build_recommendations(
         score=student_ecr,
         title=native.metadata.get("title"),
         description=native.metadata.get("description"),
         clip_rows=result["evidence"]["all_clips"],
         clip_metrics=clip_metrics,
     )
-    result["concept_bottleneck"] = {
-        "type": "student_native_verbalizable_concepts",
-        "concepts": build_native_concept_bottleneck(
-            title=native.metadata.get("title"),
-            description=native.metadata.get("description"),
-            clip_rows=result["evidence"]["all_clips"],
-            clip_metrics=clip_metrics,
-        ),
+    semantic_attributes = build_semantic_attributes(
+        title=native.metadata.get("title"),
+        description=native.metadata.get("description"),
+        clip_rows=result["evidence"]["all_clips"],
+        clip_metrics=clip_metrics,
+    )
+    llm_payload = build_semantic_llm_input(
+        result,
+        semantic_attributes=semantic_attributes,
+        recommendations=recommendations,
+    )
+    semantic_explanation = generate_semantic_explanation(
+        llm_payload,
+        language=args.explanation_language,
+        enabled=not args.disable_llm,
+    )
+    if not semantic_explanation["summary"]:
+        semantic_explanation["summary"] = build_student_summary(result)
+    if not semantic_explanation["claims"]:
+        semantic_explanation["claims"] = build_student_claims(result)
+    if not semantic_explanation["recommendations"]:
+        semantic_explanation["recommendations"] = recommendations
+
+    result["recommendations"] = semantic_explanation["recommendations"]
+    result["semantic_attributes"] = {
+        "type": "posthoc_semantic_attributes",
+        "attributes": semantic_attributes,
         "note": (
-            "Concepts are the natural-language bottleneck used for user-facing "
-            "explanation; ablations below validate whether selected evidence affects "
-            "the compact student's prediction."
+            "These attributes are deterministic semantic labels over video/text evidence. "
+            "They are not a separately trained concept bottleneck model."
+        ),
+    }
+    result["semantic_explanation"] = {
+        **semantic_explanation,
+        "input_package": llm_payload,
+    }
+    result["nla_style_explanation"]["summary"] = semantic_explanation["summary"]
+    result["nla_style_explanation"]["claims"] = semantic_explanation["claims"]
+    result["nla_style_explanation"]["natural_language_bottleneck"]["verbalizer"] = (
+        "semantic-labeling evidence package followed by optional LLM explanation"
+    )
+    result["nla_style_explanation"]["limitations"] = (
+        "Student-only explanation: teacher model khong duoc goi o inference. "
+        "LLM/template explanation chi duoc phep dien dat lai structured evidence "
+        "tu attention, ablation va semantic labels; day la NLA-inspired pipeline, "
+        "khong phai full trained Natural Language Autoencoder."
+    )
+    result["concept_bottleneck"] = {
+        "type": "deprecated_alias_for_semantic_attributes",
+        "concepts": semantic_attributes,
+        "note": (
+            "Kept for backward-compatible UI/report readers. The current thesis framing "
+            "uses semantic labeling -> LLM explanation, not an extra trained concept model."
         ),
     }
     result["meta"] = {
         "inference_mode": "student_only_native_video",
         "teacher_called_at_inference": False,
+        "explanation_pipeline": "student_attribution_ablation -> semantic_labeling -> optional_llm_or_template",
+        "llm_used": semantic_explanation["llm"]["used_llm"],
+        "llm_provider": semantic_explanation["llm"]["provider"],
         "video_path": str(Path(args.video).resolve()),
         "report_json": str(report_path) if report_path else None,
         "checkpoint": str(ckpt_path) if ckpt_path else None,

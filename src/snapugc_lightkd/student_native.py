@@ -338,20 +338,72 @@ def heuristic_engagement_score(
 
 
 def semantic_clip_label(metrics: dict[str, float]) -> str:
+    profile = semantic_clip_profile(metrics)
+    return profile["label_vi"]
+
+
+def semantic_clip_profile(metrics: dict[str, float]) -> dict[str, Any]:
+    """Human-readable semantic labels derived from native clip metrics."""
+
     bits = []
-    if metrics.get("motion", 0.0) >= 0.08:
+    bits_en = []
+    attributes = []
+
+    motion = float(metrics.get("motion", 0.0))
+    if motion >= 0.08:
         bits.append("chuyển động rõ")
-    elif metrics.get("motion", 0.0) <= 0.025:
+        bits_en.append("clear motion")
+        attributes.append(_semantic_attr("motion", "strong", "mạnh", motion, "Frame-to-frame change is high."))
+    elif motion <= 0.025:
         bits.append("nhịp hình khá tĩnh")
-    if metrics.get("brightness", 0.5) < 0.32:
+        bits_en.append("mostly static pacing")
+        attributes.append(_semantic_attr("motion", "weak", "yếu", motion, "Frame-to-frame change is low."))
+    else:
+        attributes.append(_semantic_attr("motion", "moderate", "vừa", motion, "Frame-to-frame change is moderate."))
+
+    brightness = float(metrics.get("brightness", 0.5))
+    if brightness < 0.32:
         bits.append("khung hình hơi tối")
-    elif metrics.get("brightness", 0.5) > 0.72:
+        bits_en.append("slightly dark frame")
+        attributes.append(_semantic_attr("lighting", "weak", "yếu", brightness, "Average brightness is below the comfortable range."))
+    elif brightness > 0.72:
         bits.append("khung hình sáng")
-    if metrics.get("contrast", 0.0) >= 0.18 or metrics.get("edge_energy", 0.0) >= 0.055:
+        bits_en.append("bright frame")
+        attributes.append(_semantic_attr("lighting", "strong", "mạnh", brightness, "Average brightness is high."))
+    else:
+        attributes.append(_semantic_attr("lighting", "balanced", "cân bằng", brightness, "Brightness sits in a readable range."))
+
+    contrast = float(metrics.get("contrast", 0.0))
+    edge_energy = float(metrics.get("edge_energy", 0.0))
+    if contrast >= 0.18 or edge_energy >= 0.055:
         bits.append("chi tiết thị giác nổi bật")
-    if metrics.get("sharpness", 0.0) <= 0.0008:
+        bits_en.append("salient visual detail")
+        attributes.append(_semantic_attr("visual_detail", "strong", "mạnh", max(contrast, edge_energy), "Contrast or edge energy is high."))
+    else:
+        attributes.append(_semantic_attr("visual_detail", "moderate", "vừa", max(contrast, edge_energy), "Contrast and edge energy are not dominant."))
+
+    sharpness = float(metrics.get("sharpness", 0.0))
+    if sharpness <= 0.0008:
         bits.append("độ nét thấp")
-    return ", ".join(bits) if bits else "tín hiệu thị giác trung tính"
+        bits_en.append("low sharpness")
+        attributes.append(_semantic_attr("sharpness", "weak", "yếu", sharpness, "Laplacian sharpness is low."))
+    else:
+        attributes.append(_semantic_attr("sharpness", "usable", "ổn", sharpness, "Sharpness is usable for sampled-frame analysis."))
+
+    colorfulness = float(metrics.get("colorfulness", 0.0))
+    saturation = float(metrics.get("saturation", 0.0))
+    if colorfulness >= 0.18 or saturation >= 0.28:
+        bits.append("màu sắc nổi bật")
+        bits_en.append("vivid color")
+        attributes.append(_semantic_attr("color", "strong", "mạnh", max(colorfulness, saturation), "Colorfulness or saturation is high."))
+    else:
+        attributes.append(_semantic_attr("color", "neutral", "trung tính", max(colorfulness, saturation), "Color signal is neutral."))
+
+    return {
+        "label_vi": ", ".join(bits) if bits else "tín hiệu thị giác trung tính",
+        "label_en": ", ".join(bits_en) if bits_en else "neutral visual signal",
+        "attributes": attributes,
+    }
 
 
 def build_recommendations(
@@ -409,14 +461,14 @@ def build_recommendations(
     return recs[:4]
 
 
-def build_native_concept_bottleneck(
+def build_semantic_attributes(
     *,
     title: str | None,
     description: str | None,
     clip_rows: list[dict[str, Any]],
     clip_metrics: list[dict[str, float]],
 ) -> list[dict[str, Any]]:
-    """Verbalizable concept bottleneck derived from student-native evidence."""
+    """Interpretable semantic attributes derived from student-native evidence."""
 
     if not clip_metrics:
         return []
@@ -480,6 +532,27 @@ def build_native_concept_bottleneck(
             "medium_is_ok",
         ),
     ]
+
+
+def build_native_concept_bottleneck(
+    *,
+    title: str | None,
+    description: str | None,
+    clip_rows: list[dict[str, Any]],
+    clip_metrics: list[dict[str, float]],
+) -> list[dict[str, Any]]:
+    """Backward-compatible alias for older demo UI fields.
+
+    These are no longer treated as a trained bottleneck. They are semantic
+    attributes used by the language explanation layer.
+    """
+
+    return build_semantic_attributes(
+        title=title,
+        description=description,
+        clip_rows=clip_rows,
+        clip_metrics=clip_metrics,
+    )
 
 
 def save_top_clip_thumbnails(
@@ -547,4 +620,14 @@ def _concept(name: str, score: float, rationale: str, direction: str) -> dict[st
         "label_vi": label_vi,
         "rationale": rationale,
         "direction": direction,
+    }
+
+
+def _semantic_attr(name: str, label: str, label_vi: str, value: float, rationale: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "label": label,
+        "label_vi": label_vi,
+        "value": float(value),
+        "rationale": rationale,
     }

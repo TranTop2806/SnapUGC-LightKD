@@ -57,7 +57,8 @@ form.addEventListener("submit", async (event) => {
 fetch("/health")
   .then((res) => res.json())
   .then((data) => {
-    health.textContent = data.checkpoint ? "Checkpoint loaded" : "Demo fallback";
+    const model = data.checkpoint ? "Checkpoint loaded" : "Demo fallback";
+    health.textContent = data.llm_explainer ? `${model} · LLM` : `${model} · Template`;
   })
   .catch(() => {
     health.textContent = "Offline";
@@ -106,7 +107,7 @@ function renderResult(data) {
     claims.appendChild(li);
   });
 
-  const conceptRows = data.concept_bottleneck?.concepts || [];
+  const conceptRows = data.semantic_attributes?.attributes || data.concept_bottleneck?.concepts || [];
   const concepts = document.querySelector("#concepts");
   concepts.innerHTML = "";
   conceptRows.forEach((concept) => {

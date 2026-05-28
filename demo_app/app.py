@@ -53,6 +53,7 @@ def health() -> dict[str, object]:
         "report_json": str(resolve_report_path()),
         "checkpoint": str(resolve_checkpoint_path(resolve_report_path())),
         "efficientnet_weights": str(resolve_efficientnet_path()),
+        "llm_explainer": bool(os.environ.get("SNAPUGC_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")),
     }
 
 
