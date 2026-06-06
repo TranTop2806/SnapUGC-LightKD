@@ -186,6 +186,25 @@ def attach_dover_features(
     return int(features.shape[-1])
 
 
+def attach_lite_action(rows: list[dict[str, object]], path: str | None) -> int:
+    if not path:
+        return 0
+    with np.load(path) as npz:
+        ids = [str(v) for v in npz["ids"]]
+        features = npz["lite_action_features"].astype(np.float32)
+    feat_by_id = {vid: features[idx] for idx, vid in enumerate(ids)}
+    missing = 0
+    for row in rows:
+        feature = feat_by_id.get(str(row["Id"]))
+        if feature is None:
+            missing += 1
+            feature = np.zeros((0, features.shape[-1]), dtype=np.float32)
+        row["lite_action_features"] = feature
+    if missing:
+        print(f"Warning: missing lite action features for {missing} rows", flush=True)
+    return int(features.shape[-1])
+
+
 def attach_pseudo_labels(
     rows: list[dict[str, object]],
     pseudo_path: str | None,
@@ -376,16 +395,16 @@ def parse_args() -> argparse.Namespace:
         default="visual_text_sound",
     )
     parser.add_argument("--max-clips", type=int, default=16)
-    parser.add_argument("--hidden-dim", type=int, default=96)
-    parser.add_argument("--layers", type=int, default=1)
-    parser.add_argument("--heads", type=int, default=4)
-    parser.add_argument("--dropout", type=float, default=0.22)
+    parser.add_argument("--hidden-dim", type=int, default=384)
+    parser.add_argument("--layers", type=int, default=3)
+    parser.add_argument("--heads", type=int, default=8)
+    parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument(
         "--fusion-mode",
         choices=("concat", "cross_attention"),
         default="concat",
     )
-    parser.add_argument("--projection-head", choices=("linear", "mlp"), default="linear")
+    parser.add_argument("--projection-head", choices=("linear", "mlp"), default="mlp")
     parser.add_argument("--ecr-bins", type=int, default=0)
     parser.add_argument(
         "--temporal-aggregation",
@@ -408,6 +427,7 @@ def parse_args() -> argparse.Namespace:
         default="input_concat",
     )
     parser.add_argument("--dover-features")
+    parser.add_argument("--lite-action-features")
     parser.add_argument("--dover-feature-mode", choices=("full", "scalars"), default="full")
     parser.add_argument(
         "--dover-fusion",
@@ -415,6 +435,8 @@ def parse_args() -> argparse.Namespace:
         default="input_concat",
     )
     parser.add_argument("--temporal-conv", choices=("none", "depthwise", "full"), default="none")
+    parser.add_argument("--shared-transformer-weights", action="store_true")
+    parser.add_argument("--drop-path", type=float, default=0.0)
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--batch", type=int, default=32)
     parser.add_argument("--eval-batch", type=int, default=128)
@@ -511,6 +533,11 @@ def main() -> None:
         dover_dim,
         args.dover_fusion,
     )
+    lite_action_dim = attach_lite_action(rows, args.lite_action_features)
+    input_config = input_config.with_lite_action(
+        bool(args.lite_action_features),
+        lite_action_dim,
+    )
     n_pseudo_labels = attach_pseudo_labels(rows, args.pseudo_labels, args.pseudo_label_column)
     train_rows, val_rows = split_rows(rows, val_ratio=args.val_ratio, seed=split_seed)
     train_dataset = OfficialTeacherArtifactDataset(
@@ -559,6 +586,8 @@ def main() -> None:
         "hallucination_feedback": args.hallucination_feedback,
         "hallucination_feedback_dim": args.hallucination_feedback_dim,
         "temporal_conv": args.temporal_conv,
+        "shared_transformer_weights": args.shared_transformer_weights,
+        "drop_path": args.drop_path,
     }
     print(
         f"Loaded official artifacts: total={len(rows)} train={len(train_rows)} "
@@ -685,6 +714,7 @@ def main() -> None:
         "dover_features": args.dover_features,
         "dover_feature_mode": args.dover_feature_mode,
         "dover_fusion": args.dover_fusion,
+        "lite_action_features": args.lite_action_features,
         "pseudo_labels": args.pseudo_labels,
         "pseudo_label_column": args.pseudo_label_column,
         "n_pseudo_labels": n_pseudo_labels,

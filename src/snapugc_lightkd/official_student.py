@@ -7,6 +7,64 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+
+def drop_path(x: torch.Tensor, drop_prob: float = 0.0, training: bool = False) -> torch.Tensor:
+    if drop_prob == 0. or not training:
+        return x
+    keep_prob = 1 - drop_prob
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+    random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+    random_tensor.floor_()  # binarize
+    output = x.div(keep_prob) * random_tensor
+    return output
+
+
+class DropPath(nn.Module):
+    def __init__(self, drop_prob: float = 0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return drop_path(x, self.drop_prob, self.training)
+
+
+class DropPathTransformerLayer(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int,
+        dropout: float = 0.1,
+        drop_path: float = 0.0,
+    ):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.activation = nn.GELU()
+
+    def forward(self, src: torch.Tensor, src_key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
+        # Pre-LN
+        x = self.norm1(src)
+        if src_key_padding_mask is not None:
+            attn_output, _ = self.self_attn(x, x, x, key_padding_mask=src_key_padding_mask, need_weights=False)
+        else:
+            attn_output, _ = self.self_attn(x, x, x, need_weights=False)
+        src = src + self.drop_path(self.dropout1(attn_output))
+
+        x = self.norm2(src)
+        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
+        src = src + self.drop_path(self.dropout2(x))
+        return src
+
+
 class AttentionPool(nn.Module):
     def __init__(self, dim: int, dropout: float = 0.1):
         super().__init__()
@@ -128,6 +186,8 @@ class OfficialArtifactStudent(nn.Module):
         hallucination_feedback: bool = False,
         hallucination_feedback_dim: int = 0,
         temporal_conv: str = "none",
+        shared_transformer_weights: bool = False,
+        drop_path: float = 0.0,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -184,16 +244,48 @@ class OfficialArtifactStudent(nn.Module):
                 nn.Dropout(dropout),
             )
         self.pos_embed = nn.Parameter(torch.zeros(1, max_clips, hidden_dim))
-        layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim,
-            nhead=n_heads,
-            dim_feedforward=hidden_dim * 4,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.temporal_encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+        self.shared_transformer_weights = shared_transformer_weights
+        self.drop_path = drop_path
+        self.n_layers = n_layers
+
+        if shared_transformer_weights:
+            self.temporal_layer = DropPathTransformerLayer(
+                d_model=hidden_dim,
+                nhead=n_heads,
+                dim_feedforward=hidden_dim * 4,
+                dropout=dropout,
+                drop_path=drop_path,
+            )
+            self.temporal_layers = None
+            self.temporal_encoder = None
+        elif drop_path > 0.0:
+            self.temporal_layer = None
+            self.temporal_layers = nn.ModuleList(
+                [
+                    DropPathTransformerLayer(
+                        d_model=hidden_dim,
+                        nhead=n_heads,
+                        dim_feedforward=hidden_dim * 4,
+                        dropout=dropout,
+                        drop_path=drop_path,
+                    )
+                    for _ in range(n_layers)
+                ]
+            )
+            self.temporal_encoder = None
+        else:
+            self.temporal_layer = None
+            self.temporal_layers = None
+            layer = nn.TransformerEncoderLayer(
+                d_model=hidden_dim,
+                nhead=n_heads,
+                dim_feedforward=hidden_dim * 4,
+                dropout=dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            self.temporal_encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
         self.temporal_pool = AttentionPool(hidden_dim, dropout)
         self.local_pool = None
         self.global_pool = None
@@ -362,10 +454,23 @@ class OfficialArtifactStudent(nn.Module):
                 raise ValueError("quality_inputs are required when quality_fusion is enabled")
             clip_hidden = clip_hidden + self.quality_proj(quality_inputs)
         clip_hidden = clip_hidden + self.pos_embed[:, : clip_hidden.size(1), :]
-        clip_hidden = self.temporal_encoder(
-            clip_hidden,
-            src_key_padding_mask=~clip_mask.bool(),
-        )
+        if self.shared_transformer_weights:
+            for _ in range(self.n_layers):
+                clip_hidden = self.temporal_layer(
+                    clip_hidden,
+                    src_key_padding_mask=~clip_mask.bool(),
+                )
+        elif self.temporal_layers is not None:
+            for layer in self.temporal_layers:
+                clip_hidden = layer(
+                    clip_hidden,
+                    src_key_padding_mask=~clip_mask.bool(),
+                )
+        else:
+            clip_hidden = self.temporal_encoder(
+                clip_hidden,
+                src_key_padding_mask=~clip_mask.bool(),
+            )
         if self.temporal_aggregation == "global_local":
             n_local = min(self.local_clips, clip_hidden.size(1))
             local_hidden, _ = self.local_pool(

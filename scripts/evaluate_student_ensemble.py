@@ -104,6 +104,25 @@ def attach_dover_features(
     return int(features.shape[-1])
 
 
+def attach_lite_action(rows: list[dict[str, object]], path: str | None) -> int:
+    if not path:
+        return 0
+    with np.load(path) as npz:
+        ids = [str(v) for v in npz["ids"]]
+        features = npz["lite_action_features"].astype(np.float32)
+    feat_by_id = {vid: features[idx] for idx, vid in enumerate(ids)}
+    missing = 0
+    for row in rows:
+        feature = feat_by_id.get(str(row["Id"]))
+        if feature is None:
+            missing += 1
+            feature = np.zeros((0, features.shape[-1]), dtype=np.float32)
+        row["lite_action_features"] = feature
+    if missing:
+        print(f"Warning: missing lite action features for {missing} rows", flush=True)
+    return int(features.shape[-1])
+
+
 def load_run(run_path: Path) -> tuple[dict[str, object], Path]:
     report_path = run_path / "official_student_kd_report.json"
     if run_path.is_file() and run_path.suffix == ".json":
@@ -155,11 +174,16 @@ def predict_one(
             dover_feature_dim=input_info.get("dover_feature_dim", 0),
             dover_fusion=input_info.get("dover_fusion", "input_concat"),
             use_teacher_compressed_tokens=input_info.get("use_teacher_compressed_tokens", False),
+            use_lite_action=input_info.get("use_lite_action", False),
+            lite_action_dim=input_info.get("lite_action_dim", 0),
         )
     else:
         preset = str(report.get("input_preset") or "visual_text_sound")
         input_config = StudentInputConfig.from_preset(preset).with_text_tokens(
             bool(report.get("use_text_tokens", False))
+        ).with_lite_action(
+            bool(report.get("lite_action_features")),
+            int(report.get("lite_action_dim", 1152))
         )
 
     # Make a copy of rows to safely attach run-specific features without cross-pollution
@@ -187,6 +211,17 @@ def predict_one(
                 attach_dover_features(rows_copy, str(p), dover_mode)
             else:
                 raise FileNotFoundError(f"DOVER features file not found: {dover_path}")
+
+    if input_config.use_lite_action:
+        lite_action_path = report.get("lite_action_features")
+        if lite_action_path:
+            p = Path(lite_action_path)
+            if not p.exists():
+                p = ROOT / lite_action_path
+            if p.exists():
+                attach_lite_action(rows_copy, str(p))
+            else:
+                raise FileNotFoundError(f"Lite action features file not found: {lite_action_path}")
 
     dataset = OfficialTeacherArtifactDataset(
         rows_copy,

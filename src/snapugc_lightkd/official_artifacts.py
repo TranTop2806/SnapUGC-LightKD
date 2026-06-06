@@ -43,6 +43,8 @@ class StudentInputConfig:
     dover_feature_dim: int = 0
     dover_fusion: str = "input_concat"
     use_teacher_compressed_tokens: bool = False
+    use_lite_action: bool = False
+    lite_action_dim: int = 0
 
     @classmethod
     def from_preset(cls, preset: str) -> StudentInputConfig:
@@ -92,6 +94,9 @@ class StudentInputConfig:
             dover_feature_dim=dim if enabled else 0,
             dover_fusion=fusion if enabled else "input_concat",
         )
+
+    def with_lite_action(self, enabled: bool, dim: int = 1152) -> StudentInputConfig:
+        return replace(self, use_lite_action=enabled, lite_action_dim=dim if enabled else 0)
 
 
 def artifact_keys_for_input_config(config: StudentInputConfig) -> tuple[str, ...]:
@@ -335,6 +340,17 @@ class OfficialTeacherArtifactDataset(Dataset):
                     ),
                     frame_length,
                     self.input_config.dover_feature_dim,
+                )
+            )
+        if self.input_config.use_lite_action:
+            pieces.append(
+                _repeat_or_fit_2d(
+                    row.get(
+                        "lite_action_features",
+                        np.zeros((0, self.input_config.lite_action_dim), dtype=np.float32),
+                    ),
+                    frame_length,
+                    self.input_config.lite_action_dim,
                 )
             )
         return pieces
