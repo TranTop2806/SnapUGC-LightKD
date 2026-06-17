@@ -72,6 +72,24 @@ In the code, the 1000 held-out rows are named `val` because they are used for
 model selection. In thesis writing, call them a fixed validation/test split and
 state the split protocol clearly.
 
+### Dataset Visualizations
+
+* **Dataset Samples**: A grid of sample video frame thumbnails from the SnapUGC dataset with their corresponding ECR quality scores overlayed:
+
+  ![Dataset Samples](./assets/dataset_samples.png)
+
+* **ECR Score Distribution**: The distribution of Engagement Continuation Ratio (ECR) scores across the balanced 5000-video subset, comparing the train and validation splits:
+
+  ![ECR Distribution](./assets/ecr_distribution.png)
+
+* **Dataset Overview & Statistics**: Analysis of ECR quality band bar chart, Cumulative Distribution Function (CDF), percentile stats, and metadata counts:
+
+  ![Dataset Overview](./assets/dataset_overview.png)
+
+* **ECR Quality Bands Detail**: Per-band score distribution comparison across low, medium, and high quality regions:
+
+  ![ECR Quality Bands](./assets/ecr_quality_bands.png)
+
 ## Repository Structure
 
 ```text
@@ -223,6 +241,10 @@ flowchart TD
     HEAD --> OUT["Teacher ECR"]
     TR --> ART["Hidden/attention/artifact export for KD"]
 ```
+
+* **Official Publication Diagram**: Below is the teacher's EVQA architecture diagram extracted from the original SnapUGC publication:
+
+  ![Teacher Architecture](./assets/teacher_architecture.png)
 
 Teacher output files:
 
