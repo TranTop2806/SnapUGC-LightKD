@@ -391,7 +391,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-dir", required=True)
     parser.add_argument(
         "--input-preset",
-        choices=("visual_text_sound", "teacher_compressed_tokens"),
+        choices=("visual_text_sound", "teacher_compressed_tokens", "clip_mobilenet_text"),
         default="visual_text_sound",
     )
     parser.add_argument("--max-clips", type=int, default=16)

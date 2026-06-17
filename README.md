@@ -270,27 +270,35 @@ The best deployable single student model (`improve_large_h256_l3_lite_action`) i
 
 ```mermaid
 flowchart TD
-    VF["frame_fusion_feature\nT x 1024"] --> CONCAT["Concat features\nT x 2176"]
-    LA["lite_action_feature\nT x 1152"] --> CONCAT
-    CONCAT --> VP["Linear Projection + LN + GELU\n2176 -> hidden_dim=256"]
-    
-    CL["CLIP ViT-B/32 keyframe embeddings\nT x 512"] --> CP["Linear + LayerNorm\n512 -> 256-d"]
-    VP -- clip_add (element-wise sum) --> CP
-    CP --> PE["Add Positional Embedding"]
-    PE --> TE["3-Layer, 8-Head Temporal Transformer"]
-    TE --> AP["Attention pooling -> video_pooled (256-d)"]
+    subgraph Input Features
+        VF["Frame Fusion\n(T x 1024)"]
+        LA["Lite Action\n(T x 1152)"]
+        CL["CLIP Keyframes\n(T x 512)"]
+        TX["Metadata Text\n(3 x 768)"]
+    end
 
-    TX["sound + title + description pooled\n3 x 768"] --> TP["Text projection + source embedding\n768 -> 256-d"]
-    TP --> TAP["Text attention pooling -> text_pooled (256-d)"]
+    subgraph Spatiotemporal Video Encoder
+        VF & LA --> CONCAT["Concat\n(T x 2176)"]
+        CONCAT --> VP["Video Projection\n(T x 256)"]
+        CL --> CP["CLIP Projection\n(T x 256)"]
+        VP & CP --> ADD["clip_add (Sum)\n(T x 256)"]
+        ADD --> PE["Add Positional Embed"]
+        PE --> TE["3-Layer, 8-Head Transformer\n(T x 256)"]
+        TE --> AP["Attention Pooling\n(256)"]
+    end
 
-    AP --> CAT["Concat video_pooled + text_pooled (512-d)"]
-    TAP --> CAT
-    CAT --> FM["Fusion MLP (512 -> 256 -> 256)"]
-    
-    FM --> HAL["Hallucination heads (train only)\npredict teacher action/caption embeddings"]
-    FM --> FB["Hallucination Feedback (inference)\nproject hallucinated action+caption back to 256-d"]
-    FB --> EH["Sigmoid ECR head\n256 -> 128 -> 1"]
-    EH --> ECR["Student ECR"]
+    subgraph Metadata Text Encoder
+        TX --> TP["Text Projection & Source Embed\n(3 x 256)"]
+        TP --> TAP["Attention Pooling\n(256)"]
+    end
+
+    subgraph Multimodal Fusion & Prediction Head
+        AP & TAP --> CAT["Concat Video + Text\n(512)"]
+        CAT --> FM["Multimodal Fusion MLP\n(512 -> 256 -> 256)"]
+        FM --> FB["Feedback Loop (Inference)\n(Add hallucinated action/caption)"]
+        FB --> EH["Sigmoid ECR Head\n(256 -> 128 -> 1)"]
+        EH --> ECR["Student ECR Score"]
+    end
 ```
 
 Hyperparameters (best single model + lite action):

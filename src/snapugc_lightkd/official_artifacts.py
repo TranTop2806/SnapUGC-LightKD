@@ -45,6 +45,10 @@ class StudentInputConfig:
     use_teacher_compressed_tokens: bool = False
     use_lite_action: bool = False
     lite_action_dim: int = 0
+    # When True, quality_features (e.g. CLIP ViT-B/32) is the PRIMARY visual
+    # stream instead of teacher's frame_fusion_feature. This enables the student
+    # to run fully independently of the teacher at inference time.
+    clip_primary: bool = False
 
     @classmethod
     def from_preset(cls, preset: str) -> StudentInputConfig:
@@ -60,6 +64,19 @@ class StudentInputConfig:
                 preset="teacher_compressed_tokens",
                 use_frame_fusion=False,
                 use_teacher_compressed_tokens=True,
+            ),
+            # Proper KD preset: student uses its own feature extractors.
+            # Visual: CLIP ViT-B/32 (quality_features, 512-d).
+            # Motion: MobileNetV3-Small (lite_action_features, 1152-d).
+            # Text:   CLIP Text Encoder tokens from teacher artifacts.
+            # Teacher artifacts supply KD supervision only, NOT visual inputs.
+            "clip_mobilenet_text": cls(
+                preset="clip_mobilenet_text",
+                use_frame_fusion=False,
+                clip_primary=True,
+                use_sound_text=True,
+                use_title_text=True,
+                use_description_text=True,
             ),
         }
         if preset not in presets:
@@ -313,13 +330,32 @@ class OfficialTeacherArtifactDataset(Dataset):
             return [_build_compressed_teacher_tokens(row)]
         pieces = []
         frame_length = 0
-        if self.input_config.use_frame_fusion:
+
+        if self.input_config.clip_primary:
+            # --- Proper KD mode ---
+            # CLIP ViT-B/32 (quality_features) is the student's OWN primary
+            # visual backbone. Teacher's frame_fusion_feature is NOT used as
+            # input. This allows the student to run without teacher at inference.
+            qdim = self.input_config.quality_feature_dim
+            clip_feat = _ensure_2d(
+                row.get(
+                    "quality_features",
+                    np.zeros((0, qdim), dtype=np.float32),
+                ),
+                qdim,
+            )
+            frame_length = clip_feat.shape[0]
+            pieces.append(clip_feat)
+        elif self.input_config.use_frame_fusion:
+            # --- Legacy mode: uses teacher's internal frame_fusion_feature ---
             frame_piece = _ensure_2d(row["frame_fusion_feature"], 1024)
             frame_length = frame_piece.shape[0]
             pieces.append(frame_piece)
+
         if (
             self.input_config.use_quality_features
             and self.input_config.quality_fusion == "input_concat"
+            and not self.input_config.clip_primary  # already added above when clip_primary
         ):
             pieces.append(
                 _repeat_or_fit_2d(
