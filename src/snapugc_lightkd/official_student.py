@@ -89,48 +89,6 @@ class AttentionPool(nn.Module):
         return pooled, weights
 
 
-class ResidualBlock(nn.Module):
-    def __init__(self, dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.fc1 = nn.Linear(dim, dim)
-        self.norm = nn.LayerNorm(dim)
-        self.act = nn.GELU()
-        self.drop = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(dim, dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
-        x = self.fc1(x)
-        x = self.norm(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        return residual + x
-
-
-class AdvancedHallucinationHead(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, hidden_dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.proj_in = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-        )
-        self.res1 = ResidualBlock(hidden_dim, dropout)
-        self.res2 = ResidualBlock(hidden_dim, dropout)
-        self.proj_out = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, output_dim),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.proj_in(x)
-        x = self.res1(x)
-        x = self.res2(x)
-        x = self.proj_out(x)
-        return x
-
-
 def _identity_temporal_conv(
     channels: int,
     *,
@@ -157,7 +115,7 @@ def _identity_temporal_conv(
 
 
 class OfficialArtifactStudent(nn.Module):
-    """Small source-aware student used for both deployable and upper-bound runs."""
+    """Small source-aware deployable student."""
 
     def __init__(
         self,
@@ -182,9 +140,6 @@ class OfficialArtifactStudent(nn.Module):
         semantic_gated_fusion: bool = False,
         shared_distill_dim: int = 0,
         fusion_experts: int = 1,
-        use_hallucination: bool = False,
-        hallucination_feedback: bool = False,
-        hallucination_feedback_dim: int = 0,
         temporal_conv: str = "none",
         shared_transformer_weights: bool = False,
         drop_path: float = 0.0,
@@ -199,9 +154,6 @@ class OfficialArtifactStudent(nn.Module):
         self.semantic_gated_fusion = semantic_gated_fusion
         self.shared_distill_dim = shared_distill_dim
         self.fusion_experts = fusion_experts
-        self.use_hallucination = use_hallucination
-        self.hallucination_feedback = hallucination_feedback
-        self.hallucination_feedback_dim = hallucination_feedback_dim
         if fusion_mode not in {"concat", "cross_attention"}:
             raise ValueError(f"Unknown fusion_mode: {fusion_mode}")
         if temporal_aggregation not in {"attention", "global_local"}:
@@ -405,30 +357,6 @@ class OfficialArtifactStudent(nn.Module):
         if shared_distill_dim:
             self.student_to_shared = nn.Linear(hidden_dim, shared_distill_dim)
             self.teacher_to_shared = nn.Linear(teacher_hidden_dim, shared_distill_dim)
-        if use_hallucination:
-            self.action_hallucination_head = AdvancedHallucinationHead(
-                input_dim=hidden_dim,
-                output_dim=512,
-                hidden_dim=hidden_dim * 2,
-                dropout=dropout,
-            )
-            self.caption_hallucination_head = AdvancedHallucinationHead(
-                input_dim=hidden_dim,
-                output_dim=1024,
-                hidden_dim=hidden_dim * 2,
-                dropout=dropout,
-            )
-        else:
-            self.action_hallucination_head = None
-            self.caption_hallucination_head = None
-        self.hallucination_feedback_proj = None
-        if hallucination_feedback and use_hallucination:
-            total_halluc_dim = hallucination_feedback_dim if hallucination_feedback_dim > 0 else (512 + 1024)
-            self.hallucination_feedback_proj = nn.Sequential(
-                nn.Linear(total_halluc_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.GELU(),
-            )
     @staticmethod
     def _fit_type_embed(type_embed: torch.Tensor, length: int) -> torch.Tensor:
         if length <= type_embed.size(1):
@@ -483,12 +411,12 @@ class OfficialArtifactStudent(nn.Module):
             video_hidden, temporal_attention = self.temporal_pool(clip_hidden, clip_mask)
 
         if text_inputs.size(1) > 0:
-            text_tokens = self.text_proj(text_inputs)
-            text_tokens = text_tokens + self._fit_type_embed(
+            text_embeddings = self.text_proj(text_inputs)
+            text_embeddings = text_embeddings + self._fit_type_embed(
                 self.text_type_embed,
-                text_tokens.size(1),
+                text_embeddings.size(1),
             )
-            text_hidden, text_attention = self.text_pool(text_tokens, text_mask)
+            text_hidden, text_attention = self.text_pool(text_embeddings, text_mask)
         else:
             text_hidden = torch.zeros_like(video_hidden)
             text_attention = torch.zeros(text_inputs.size(0), 0, device=text_inputs.device)
@@ -496,8 +424,8 @@ class OfficialArtifactStudent(nn.Module):
         if self.fusion_mode == "cross_attention" and text_inputs.size(1) > 0:
             attended_clip_hidden, _ = self.cross_attention(
                 query=clip_hidden,
-                key=text_tokens,
-                value=text_tokens,
+                key=text_embeddings,
+                value=text_embeddings,
                 key_padding_mask=~text_mask.bool(),
                 need_weights=False,
             )
@@ -568,53 +496,6 @@ class OfficialArtifactStudent(nn.Module):
         if dist_logits is not None:
             outputs["ecr_dist_logits"] = dist_logits
             outputs["ecr_bin_centers"] = self.ecr_bin_centers
-        if self.use_hallucination:
-            pred_action = self.action_hallucination_head(cross_hidden)
-            pred_caption = self.caption_hallucination_head(cross_hidden)
-            outputs["pred_action_feature"] = pred_action
-            outputs["pred_caption_feature"] = pred_caption
-            if self.hallucination_feedback and self.hallucination_feedback_proj is not None:
-                # Self-loop: project hallucinated features back to hidden_dim and add to cross_hidden
-                halluc_concat = torch.cat([pred_action, pred_caption], dim=-1)
-                halluc_feedback = self.hallucination_feedback_proj(halluc_concat)
-                cross_hidden = cross_hidden + halluc_feedback
-                # Re-pool and re-fuse with updated cross_hidden
-                if self.temporal_aggregation == "global_local":
-                    n_local = min(self.local_clips, cross_hidden.size(1))
-                    local_hidden_fb, _ = self.local_pool(cross_hidden[:, :n_local, :], clip_mask[:, :n_local])
-                    global_hidden_fb, _ = self.global_pool(cross_hidden, clip_mask)
-                    video_hidden = torch.cat([local_hidden_fb, global_hidden_fb], dim=-1)
-                else:
-                    video_hidden, _ = self.temporal_pool(cross_hidden, clip_mask)
-                if self.text_gate is not None:
-                    video_hidden = video_hidden * self.text_gate(text_hidden)
-                fusion_inputs = torch.cat([video_hidden, text_hidden], dim=-1)
-                if self.fusion_expert_layers is None:
-                    fused_hidden = self.fusion(fusion_inputs)
-                else:
-                    router_logits = self.fusion_router(fusion_inputs)
-                    router_probs_fb = torch.softmax(router_logits, dim=-1)
-                    top1_fb = router_probs_fb.argmax(dim=-1)
-                    hard_gate_fb = F.one_hot(top1_fb, num_classes=router_probs_fb.size(-1)).type_as(router_probs_fb)
-                    gate_fb = hard_gate_fb - router_probs_fb.detach() + router_probs_fb
-                    expert_outputs_fb = torch.stack(
-                        [expert(fusion_inputs) for expert in self.fusion_expert_layers],
-                        dim=1,
-                    )
-                    fused_hidden = torch.sum(expert_outputs_fb * gate_fb.unsqueeze(-1), dim=1)
-                teacher_aligned_hidden = fused_hidden
-                ecr_hidden = fused_hidden
-                if self.dover_fusion != "none" and dover_inputs is not None and dover_inputs.numel() > 0:
-                    dover_hidden = self.dover_proj(dover_inputs)
-                    if self.dover_fusion == "late_add":
-                        ecr_hidden = fused_hidden + dover_hidden
-                    else:
-                        ecr_hidden = self.late_fusion(torch.cat([fused_hidden, dover_hidden], dim=-1))
-                predicted_ecr = self.ecr_head(ecr_hidden).squeeze(-1)
-                outputs["predicted_ecr"] = predicted_ecr
-                outputs["student_hidden"] = teacher_aligned_hidden
-                outputs["teacher_space_hidden"] = self.hidden_to_teacher(teacher_aligned_hidden)
-                outputs["teacher_space_temporal"] = self.hidden_to_teacher(cross_hidden)
         return outputs
 
 
@@ -720,6 +601,29 @@ def pearson_correlation_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.
         return pred.sum() * 0.0
     corr = (pred * target).mean() / pred_std.clamp_min(1e-6) / target_std.clamp_min(1e-6)
     return 1.0 - corr.clamp(-1.0, 1.0)
+
+
+def concordance_correlation_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """One minus Lin's CCC for batch-level continuous regression.
+
+    Unlike Pearson loss, CCC also penalizes mismatched means and variances. This
+    makes it a useful metric-aligned companion to pointwise ECR regression.
+    """
+    if pred.numel() < 2:
+        return pred.sum() * 0.0
+    target = target.detach()
+    pred_mean = pred.mean()
+    target_mean = target.mean()
+    pred_centered = pred - pred_mean
+    target_centered = target - target_mean
+    pred_var = pred_centered.pow(2).mean()
+    target_var = target_centered.pow(2).mean()
+    covariance = (pred_centered * target_centered).mean()
+    denominator = pred_var + target_var + (pred_mean - target_mean).pow(2)
+    if denominator.detach() < 1e-8:
+        return pred.sum() * 0.0
+    ccc = 2.0 * covariance / denominator.clamp_min(1e-8)
+    return 1.0 - ccc.clamp(-1.0, 1.0)
 
 
 def std_match_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -899,6 +803,8 @@ def compute_losses(
     contrastive_temperature: float = 0.1,
     ldl_sigma: float = 0.06,
     focal_teacher_alpha: float = 0.0,
+    teacher_score_loss: str = "mse",
+    teacher_huber_beta: float = 0.05,
     hard_pair_similarity: float = 0.0,
     hard_pair_target_margin: float = 0.2,
     kd_transfer_beta: float = 0.0,
@@ -938,6 +844,13 @@ def compute_losses(
         )
         losses["hard_pearson"] = hard_pearson
         total = total + weights.get("hard_pearson", 0.0) * hard_pearson
+    if weights.get("hard_ccc", 0.0):
+        hard_ccc = concordance_correlation_loss(
+            outputs["predicted_ecr"],
+            batch["ecr_true"],
+        )
+        losses["hard_ccc"] = hard_ccc
+        total = total + weights.get("hard_ccc", 0.0) * hard_ccc
     if weights.get("hard_spearman", 0.0):
         hard_spearman = soft_spearman_loss(
             outputs["predicted_ecr"],
@@ -970,6 +883,12 @@ def compute_losses(
             transfer_weight = transfer_weight / transfer_weight.mean().clamp_min(1e-6)
             soft_base = (outputs["predicted_ecr"] - batch["teacher_ecr"]).pow(2)
             soft = (transfer_weight * soft_base).mean()
+        elif teacher_score_loss == "huber":
+            soft = F.smooth_l1_loss(
+                outputs["predicted_ecr"],
+                batch["teacher_ecr"],
+                beta=teacher_huber_beta,
+            )
         else:
             soft = focal_mse_loss(
                 outputs["predicted_ecr"],
@@ -1048,6 +967,11 @@ def compute_losses(
                 outputs["predicted_ecr"],
                 batch["teacher_ecr"],
             )
+        if weights.get("teacher_ccc", 0.0):
+            optional_losses["teacher_ccc"] = concordance_correlation_loss(
+                outputs["predicted_ecr"],
+                batch["teacher_ecr"],
+            )
         if weights.get("teacher_spearman", 0.0):
             optional_losses["teacher_spearman"] = soft_spearman_loss(
                 outputs["predicted_ecr"],
@@ -1100,21 +1024,6 @@ def compute_losses(
                 fusion_target,
                 temperature=contrastive_temperature,
             )
-        if weights.get("action_hallucination", 0.0) and "pred_action_feature" in outputs:
-            optional_losses["action_hallucination"] = masked_representation_loss(
-                outputs["pred_action_feature"],
-                batch["teacher_action"],
-                batch["clip_mask"],
-                mode=repr_loss,
-            )
-        if weights.get("caption_hallucination", 0.0) and "pred_caption_feature" in outputs:
-            optional_losses["caption_hallucination"] = masked_representation_loss(
-                outputs["pred_caption_feature"],
-                batch["teacher_caption_feature"],
-                batch["clip_mask"],
-                mode=repr_loss,
-            )
-
         if weights.get("spkd", 0.0):
             optional_losses["spkd"] = similarity_preserving_loss(
                 outputs["student_hidden"],

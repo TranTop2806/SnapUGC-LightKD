@@ -36,11 +36,10 @@ def main():
     # Same parameters as training
     artifact_dir = "results/original_snapugc_official_balanced_5000_artifacts_g2_32/teacher_artifacts"
     labels_csv = "data/train_subset_balanced_5000.csv"
-    save_dir = Path("results/kd_tuning_official_5k/improve_large_h256_l3_lite_action")
+    save_dir = next(Path("results/loss_ablation_controlled_2026").glob("tier3_current_*"))
 
     input_config = StudentInputConfig.from_preset("visual_text_sound")
     ragged_keys = set(artifact_keys_for_input_config(input_config))
-    ragged_keys.update({"action_feature", "caption_feature"})
 
     print("Loading official artifacts...")
     rows = load_official_artifact_rows(artifact_dir, labels_csv, ragged_keys=tuple(ragged_keys))
@@ -49,8 +48,8 @@ def main():
     quality_dim = attach_quality_features(rows, "results/clip_vitb32_keyframe_features_5000.npz")
     input_config = input_config.with_quality_features(True, quality_dim, "clip_add")
 
-    lite_action_dim = attach_lite_action(rows, "results/lite_action_features_5000.npz")
-    input_config = input_config.with_lite_action(True, lite_action_dim)
+    lite_action_dim = attach_lite_action(rows, None)
+    input_config = input_config.with_lite_action(False, lite_action_dim)
 
     train_rows, val_rows = split_rows(rows, val_ratio=0.2, seed=42)
     val_dataset = OfficialTeacherArtifactDataset(val_rows, input_config, max_clips=16)
@@ -63,13 +62,13 @@ def main():
 
     model_kwargs = {
         "clip_input_dim": val_dataset.clip_dim,
-        "hidden_dim": 256,
+        "hidden_dim": 96,
         "max_clips": 16,
-        "n_layers": 3,
-        "n_heads": 8,
+        "n_layers": 1,
+        "n_heads": 4,
         "dropout": 0.25,
         "fusion_mode": "concat",
-        "projection_head": "mlp",
+        "projection_head": "linear",
         "quality_input_dim": quality_dim,
         "quality_fusion": "clip_add",
         "ecr_bins": 0,
@@ -80,9 +79,6 @@ def main():
         "fusion_experts": 1,
         "dover_input_dim": 0,
         "dover_fusion": "none",
-        "use_hallucination": True,
-        "hallucination_feedback": True,
-        "hallucination_feedback_dim": 0,
         "temporal_conv": "none",
         "shared_transformer_weights": False,
         "drop_path": 0.0,
@@ -106,7 +102,7 @@ def main():
         "quality_features": "results/clip_vitb32_keyframe_features_5000.npz",
         "quality_fusion": "clip_add",
         "dover_features": None,
-        "lite_action_features": "results/lite_action_features_5000.npz",
+        "lite_action_features": None,
         "n_total": len(rows),
         "n_train": len(train_rows),
         "n_val": len(val_rows),

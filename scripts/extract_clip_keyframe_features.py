@@ -78,6 +78,23 @@ def frames_from_bytes(video_bytes: bytes, n_frames: int) -> list[Image.Image]:
         return []
 
 
+def frames_from_dir(video_dir: Path, video_id: str, n_frames: int) -> list[Image.Image]:
+    """Find video file in directory and decode frames."""
+    video_path = None
+    for ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
+        p = video_dir / f"{video_id}{ext}"
+        if p.exists():
+            video_path = p
+            break
+    if video_path is None:
+        return []
+    try:
+        video_bytes = video_path.read_bytes()
+        return frames_from_bytes(video_bytes, n_frames)
+    except Exception:
+        return []
+
+
 @torch.no_grad()
 def encode_frames(
     images: list[Image.Image],
@@ -177,8 +194,59 @@ def main() -> None:
             np.zeros((args.n_frames,), dtype=bool),
         )
 
-    # Build tar index
+    # Determine if input is a directory or a file
     tar_path = Path(args.tar)
+    is_dir = tar_path.is_dir()
+
+    if is_dir:
+        print(f"Reading videos directly from directory: {tar_path}", flush=True)
+        todo = [vid for vid in target_ids if vid not in done_ids]
+        print(f"To process: {len(todo)} videos", flush=True)
+
+        n_ok = 0
+        n_fail = 0
+        t_start = time.time()
+
+        for i, video_id in enumerate(todo):
+            try:
+                images = frames_from_dir(tar_path, video_id, args.n_frames)
+                if not images:
+                    raise RuntimeError("no frames")
+                feats = encode_frames(images, model, preprocess, device, args.batch_size)
+                T = feats.shape[0]
+                padded = np.zeros((args.n_frames, embed_dim), dtype=np.float32)
+                mask = np.zeros((args.n_frames,), dtype=bool)
+                n = min(T, args.n_frames)
+                padded[:n] = feats[:n]
+                mask[:n] = True
+                results[video_id] = (padded, mask)
+                n_ok += 1
+            except Exception as e:
+                results[video_id] = zero_entry()
+                n_fail += 1
+
+            # Progress
+            if (i + 1) % 50 == 0:
+                elapsed = time.time() - t_start
+                rate = (i + 1) / elapsed
+                eta = (len(todo) - i - 1) / rate
+                print(
+                    f"[{i+1}/{len(todo)}] ok={n_ok} fail={n_fail} "
+                    f"rate={rate:.1f}v/s eta={eta/60:.1f}min",
+                    flush=True,
+                )
+
+            # Checkpoint
+            if (i + 1) % args.checkpoint_every == 0:
+                save_npz(results, args.out, embed_dim, args.n_frames,
+                         args.model, args.pretrained)
+
+        save_npz(results, args.out, embed_dim, args.n_frames, args.model, args.pretrained)
+        elapsed = time.time() - t_start
+        print(f"\nDone! {n_ok} ok, {n_fail} failed, {elapsed/60:.1f}min total", flush=True)
+        return
+
+    # Build tar index
     print(f"Building tar index: {tar_path} ...", flush=True)
     t0 = time.time()
     with tarfile.open(tar_path, "r") as tf:

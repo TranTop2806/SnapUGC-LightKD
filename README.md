@@ -136,7 +136,7 @@ This project has three model roles:
 
 3. Student KD
    Input: exactly the same reduced inputs as student baseline
-   Output: student ECR plus auxiliary student artifacts
+   Output: student ECR plus training-only KD outputs
    Loss: ground-truth ECR + teacher ECR/artifact/ranking distillation
 ```
 
@@ -207,44 +207,19 @@ LOCAL_OUT_DIR=results/original_snapugc_official_balanced_5000_artifacts_g2_32 \
 bash scripts/sync_gcp_official_5k_outputs.sh
 ```
 
-## Official Teacher Architecture
+## Architecture Overview
 
-The teacher is the released SnapUGC EVQA inference stack from the original
-authors. It is heavyweight because it combines multiple pretrained components:
+The three final architecture diagrams used in the thesis are shown below. They cover the official teacher artifact pipeline, the full Student KD training graph, and the self-contained Proper KD inference pipeline.
 
-```mermaid
-flowchart TD
-    V["Raw SnapUGC video"] --> F1["Sample frames/clips across video"]
-    M["Metadata: title + description"] --> T0["Text streams"]
+### 1. Official Teacher Architecture
 
-    F1 --> E1["EfficientNetV2-s semantic branch<br/>per-frame 528d"]
-    F1 --> D1["UVQ distortion branch<br/>per-frame 256d"]
-    F1 --> A1["ResNet3D-18 action branch<br/>per-clip 512d"]
-    F1 --> C1["mPLUG-2 video caption branch<br/>caption + 1024d clip feature"]
-    V --> S1["YAMNet sound labels<br/>top audio labels as text"]
+The teacher is the released SnapUGC EVQA inference stack from the original authors. It is a heavyweight, multimodal model that combines several pretrained extractors and text encoders to model video quality. 
 
-    M --> T0
-    S1 --> T0
-    C1 --> T0
-    T0 --> SD["Stable Diffusion tokenizer/text encoder<br/>77 x 768 per stream"]
+During the feature extraction phase, the frozen teacher extracts semantic frame features (EfficientNetV2-s), distortion features (UVQ), action features (ResNet3D-18), caption/CLIP features (mPLUG-2), sound labels (YAMNet), and text metadata (Stable Diffusion text encoder). These intermediate representations and attention matrices are exported as teacher artifact shards to guide student training.
 
-    E1 --> G1["Frame/clip grouping + FC"]
-    D1 --> G1
-    A1 --> X1["Cross-attention with text streams"]
-    SD --> X1
-    C1 --> X1
+**Teacher artifact extraction pipeline**
 
-    G1 --> FUS["EVQA multimodal fusion"]
-    X1 --> FUS
-    FUS --> TR["8 TransformerBlock temporal self-attention"]
-    TR --> HEAD["ECR output head"]
-    HEAD --> OUT["Teacher ECR"]
-    TR --> ART["Hidden/attention/artifact export for KD"]
-```
-
-* **Official Publication Diagram**: Below is the teacher's EVQA architecture diagram extracted from the original SnapUGC publication:
-
-  ![Teacher Architecture](./assets/teacher_architecture.png)
+![Official SnapUGC teacher architecture](./assets/architecture/teacher.svg)
 
 Teacher output files:
 
@@ -255,107 +230,44 @@ teacher_artifacts/*.npz               # hidden states, clip outputs, attention
 teacher_artifacts/*_captions.jsonl    # generated captions
 ```
 
-The official teacher is inference-only in this thesis: we use the released
-checkpoints and do not retrain the original teacher.
+The official teacher is inference-only in this project; we use the released checkpoints and do not retrain the original teacher.
 
-## Student Work
+### 2. Student KD Training Architecture
 
-Student baseline and KD are implemented separately from the official teacher.
-They train from synced teacher artifact shards using reduced student inputs.
+The Student is designed as a highly compact model optimized for edge deployment. Its lightweight temporal Transformer processes frame-level and text features; the Proper KD preset replaces the teacher-dependent visual frontend with deployable CLIP and MobileNet backbones.
 
-```mermaid
-flowchart TD
-    A["Official teacher artifact shards"] --> B["Allowed student inputs<br/>default: frame fusion + title/description text"]
-    A --> T1["Teacher ECR"]
-    A --> T2["Teacher clip ECR"]
-    A --> T3["Teacher hidden states"]
-    A --> T4["Teacher temporal attention"]
-    B --> S1["Compact student<br/>projection + small temporal Transformer"]
-    S1 --> S2["Student ECR"]
-    S1 --> S3["Student clip ECR / hidden / attention"]
-    S2 --> L1["Baseline loss<br/>MSE(true ECR)"]
-    S2 --> L2["KD loss<br/>true ECR + teacher ECR"]
-    S3 --> L2
-    T1 --> L2
-    T2 --> L2
-    T3 --> L2
-    T4 --> L2
-```
+The student architecture is evaluated under two distinct deployment paradigms:
+1. **Semi-independent / Head Distillation**: The student operates on pre-extracted video semantic and distortion features (`visual_text_sound` preset) plus CLIP features, and learns to mimic the teacher's fusion and prediction heads.
+2. **Proper / Full Pipeline KD**: The student processes raw video frames directly on the edge using lightweight backbones (CLIP ViT-B/32 + MobileNetV3-Small) and is fully self-contained.
 
-### Student Architecture (Best Single Model + Lite Action)
+The training diagram shows the full KD objective for the `visual_text_sound` student (`hidden_dim=96`, 1 Transformer layer, 4 heads). It uses `frame_fusion_feature`, CLIP keyframe features, and text context in the student forward pass. Ground-truth ECR and cached teacher outputs are connected only to the training objective and are not runtime inputs.
 
-The best deployable single student model (`improve_large_h256_l3_lite_action`) integrates lightweight motion information (Lite Action) and visual semantics (CLIP) using a robust, scaled-up architecture:
+![Student KD full training architecture](./assets/architecture/student_training.svg)
 
-* **Feature-Level Concat**: Concatenates EfficientNetV2-S frame fusion (1024-d) and MobileNetV3-Small dynamic spatiotemporal features (1152-d) at the input level ($T \times 2176$).
-* **`clip_add` Semantic Fusion**: Adds projected CLIP ViT-B/32 keyframe embeddings ($512 \to 256$-d) directly into the video projection space before temporal encoding.
-* **Scaled Temporal Transformer**: Employs **3 Transformer layers with 8 attention heads** and a larger hidden dimension of **256** (compared to 1 layer/96-d in earlier baselines) to capture complex long-term dynamics.
+### 3. Student Proper KD Inference Architecture
 
-```mermaid
-flowchart TD
-    subgraph Input Features
-        VF["Frame Fusion\n(T x 1024)"]
-        LA["Lite Action\n(T x 1152)"]
-        CL["CLIP Keyframes\n(T x 512)"]
-        TX["Metadata Text\n(3 x 768)"]
-    end
+The inference diagram shows the self-contained `clip_mobilenet_text` pipeline. Sampled raw-video frames are encoded by CLIP ViT-B/32 and MobileNetV3-Small, concatenated per time step, and processed by the compact temporal Transformer together with text context. The teacher, cached KD targets, and training-only KD heads are absent at inference.
 
-    subgraph Spatiotemporal Video Encoder
-        VF & LA --> CONCAT["Concat\n(T x 2176)"]
-        CONCAT --> VP["Video Projection\n(T x 256)"]
-        CL --> CP["CLIP Projection\n(T x 256)"]
-        VP & CP --> ADD["clip_add (Sum)\n(T x 256)"]
-        ADD --> PE["Add Positional Embed"]
-        PE --> TE["3-Layer, 8-Head Transformer\n(T x 256)"]
-        TE --> AP["Attention Pooling\n(256)"]
-    end
+![Student Proper KD inference architecture](./assets/architecture/student_inference.svg)
 
-    subgraph Metadata Text Encoder
-        TX --> TP["Text Projection & Source Embed\n(3 x 256)"]
-        TP --> TAP["Attention Pooling\n(256)"]
-    end
+The two student diagrams intentionally document two evaluated deployment presets: the semi-independent `visual_text_sound` training configuration and the fully self-contained `clip_mobilenet_text` inference configuration.
 
-    subgraph Multimodal Fusion & Prediction Head
-        AP & TAP --> CAT["Concat Video + Text\n(512)"]
-        CAT --> FM["Multimodal Fusion MLP\n(512 -> 256 -> 256)"]
-        FM --> FB["Feedback Loop (Inference)\n(Add hallucinated action/caption)"]
-        FB --> EH["Sigmoid ECR Head\n(256 -> 128 -> 1)"]
-        EH --> ECR["Student ECR Score"]
-    end
-```
+### Student Model Hyperparameters
 
-Hyperparameters (best single model + lite action):
+The base compact student configuration (preset: `visual_text_sound`) uses:
 
 ```text
-hidden_dim = 256
-Transformer layers = 3
-heads = 8
+hidden_dim = 96
+Transformer layers = 1
+heads = 4
 dropout = 0.25
 max_clips = 16
-use_lite_action = True       # Dynamic MobileNetV3 + spatiotemporal differences
-quality_fusion = clip_add    # Element-wise addition before temporal Transformer
-use_hallucination = True     # Predicts teacher privileged action & caption features
-hallucination_feedback = True # Hallucinated embeddings feed back during inference
+quality_fusion = clip_add
 ```
 
-Baseline training objective:
+### Student KD Loss Formulation
 
-```text
-loss_baseline = MSE(student_ecr, true_ecr)
-```
-
-### Student KD Architecture And Loss
-
-The KD student uses the same input and architecture as its baseline counterpart.
-It adds auxiliary heads/projections only during training:
-
-```text
-student_clip_ecr: per-clip scalar predictions
-project(student_temporal): T x 512 teacher-space tokens
-project(student_hidden): 512 teacher-space pooled hidden state
-student_temporal_attention: T
-```
-
-KD objective:
+During training, the student optimizes the following multi-component objective:
 
 ```text
 loss_kd =
@@ -367,65 +279,56 @@ loss_kd =
 + attention     * KL(student_temporal_attention, teacher_attention_importance)
 + hard_rank     * pairwise_rank(student_ecr, true_ecr)
 + teacher_rank  * pairwise_rank(student_ecr, teacher_ecr)
-+ hallucination * repr_loss(hallucinated_features, teacher_privileged_features)
 ```
+
+The eight terms above are the core objective. The deployed best configuration
+additionally enables small-weight auxiliary ranking/relation terms
+(`teacher_pearson`, `teacher_spearman`, `teacher_listwise`,
+`student_teacher_relation`, `contrastive_hidden`); these are training-only and
+contribute marginally on top of the core terms.
 
 ### Scientific Loss Functions & Published Papers
 
-To maximize the transfer of complex multimodal reasoning, our KD architecture integrates 6 advanced loss functions inspired by key scientific publications:
+Our KD architecture integrates advanced loss terms inspired by key scientific publications:
 
 1. **Classic Logit KD & Soft Targets** (Hinton et al., NeurIPS 2015)
-   * *Loss term*: `soft_ecr` and `clip_ecr`.
-   * *Concept*: Distills the continuous soft predictions (logits) of the Teacher, transferring the "dark knowledge" and absolute rating values of the video quality to the Student.
+   * *Loss terms*: `soft_ecr` and `clip_ecr`.
+   * *Concept*: Distills continuous soft predictions, transferring the "dark knowledge" of the teacher's absolute quality ratings.
    * *Paper*: *Distilling the Knowledge in a Neural Network*.
 
 2. **FitNets Feature Alignment** (Romero et al., ICLR 2015)
-   * *Loss term*: `temporal` and `fusion`.
-   * *Concept*: Aligns intermediate hidden states. Since the Student dimension (96) is smaller than the Teacher (512), a linear projection head projects the student features into the teacher's space before calculating `cosine` representation loss.
+   * *Loss terms*: `temporal` and `fusion`.
+   * *Concept*: Aligns intermediate hidden states using a projection head to map student dimensions to the teacher's space.
    * *Paper*: *FitNets: Hints for Thin Deep Nets*.
 
 3. **Attention Transfer (AT)** (Zagoruyko & Komodakis, ICLR 2017)
    * *Loss term*: `attention`.
-   * *Concept*: Forces the Student's temporal attention weights to copy the Teacher's multi-head attention weights via KL Divergence, ensuring the student focuses on the same keyframes.
+   * *Concept*: Forces the student's temporal attention weights to mimic the teacher's attention maps via KL Divergence.
    * *Paper*: *Paying More Attention to Attention: Improving the Performance of Convolutional Neural Networks via Attention Transfer*.
 
-4. **Relational KD (RKD)** (Park et al., CVPR 2019)
-   * *Loss term*: `rkd_distance` and `student_teacher_relation`.
-   * *Concept*: Minimizes L2 distance relations between pairs of samples, allowing the student to learn relational metrics.
-   * *Paper*: *Relational Knowledge Distillation*.
-
-5. **Contrastive Representation Distillation (CRD)** (Tian et al., ICLR 2020)
-   * *Loss term*: `contrastive_hidden`.
-   * *Concept*: Maximizes the mutual information between student and teacher representations via contrastive InfoNCE loss.
-   * *Paper*: *Contrastive Representation Distillation*.
-
-6. **Privileged Information & Hallucination Network** (Vapnik et al. 2015, Hoffman et al. CVPR 2016)
-   * *Loss term*: `action_hallucination` and `caption_hallucination`.
-   * *Concept*: During training, the Student uses auxiliary heads to predict the Teacher's private modalities (e.g. 3D ResNet action features, mPLUG-2 captions) from public inputs. These heads are discarded at inference, enabling deployability.
-   * *Paper*: *Learning with Privileged Information: A New Paradigm* & *Cross Modal Distillation for Supervision Transfer*.
+4. **Pairwise Ranking Loss**
+   * *Loss terms*: `hard_rank` and `teacher_rank`.
+   * *Concept*: Optimizes relative ranking order among samples to ensure the student ranks video quality consistently with the teacher and ground truth.
 
 ### Loss Function Ablation Study
 
-To systematically evaluate the contribution of each layer of our knowledge distillation pipeline, we perform an ablation study on the validation split. By incrementally adding the different loss terms (Tiers of KD), we observe clear and cumulative performance gains:
+To systematically evaluate the contribution of each distillation layer, we perform a grouped cumulative ablation on the validation split using the `visual_text_sound` preset. The results are verified from training logs on disk:
 
 | Tier | Loss Terms Included | Scientific Reference Mapping | Validation Final Score | Marginal Gain |
 | :--- | :--- | :--- | :---: | :---: |
-| **0. Baseline (No KD)** | `hard_ecr` | Standard regression baseline | **0.5243** | — |
-| **1. Logit KD** | `hard_ecr` + `soft_ecr` + `clip_ecr` | Hinton et al. (NeurIPS 2015) | **0.5732** | `+0.0489` |
-| **2. Feature & Attn KD** | Tier 1 + `temporal` + `fusion` + `attention` | Romero et al. (FitNets), Zagoruyko et al. (AT) | **0.6027** | `+0.0295` |
-| **3. Ranking KD** | Tier 2 + `hard_rank` + `teacher_rank` | Pairwise ranking loss | **0.6127** | `+0.0100` |
-| **4. Full Student KD** | Tier 3 + `action_halluc_loss` + `caption_halluc_loss` | Vapnik et al. (LUPI), Hoffman et al. | **0.6285** | `+0.0158` |
+| **0. Baseline (No KD)** | `hard_ecr` | Standard regression baseline | **0.5609** | — |
+| **1. Logit KD** | `hard_ecr` + `soft_ecr` + `clip_ecr` | Hinton et al. (NeurIPS 2015) | **0.5982** | `+0.0373` |
+| **2. Feature & Attn KD** | Tier 1 + `temporal` + `fusion` + `attention` | Romero et al. (FitNets), Zagoruyko et al. (AT) | **0.6056** | `+0.0074` |
+| **3. Full Student KD** | Tier 2 + `hard_rank` + `teacher_rank` + relation losses | Pairwise/listwise ranking and hidden relation losses | **0.6273** | `+0.0217` |
 
 **Key Takeaways for Thesis Writing**:
-- **Logit matching (Tier 1)** contributes the single largest individual performance leap (`+0.0489`), demonstrating the crucial value of the teacher's continuous predictions (soft targets) compared to hard ground-truth labels.
-- **Intermediate features & attention alignment (Tier 2)** adds an extra `+0.0295` by forcing the student to learn *how* the teacher represents video dynamics and *where* it focuses.
-- **Privileged feature hallucination (Tier 4)** successfully breaks the input information bottleneck by reconstructing the teacher's heavy features (action & captions) only during training, giving an extra `+0.0158` without adding any runtime computing cost during production.
+- **Logit matching (Tier 1)** contributes the single largest individual performance leap (`+0.0373`), demonstrating the value of transferring continuous soft targets compared to hard ground-truth labels alone.
+- **Pairwise and relation losses (Tier 3)** add a substantial gain of `+0.0217`, showing that relative order supervision is highly beneficial for subjective quality regression.
+- **Feature and attention alignment (Tier 2)** provide a smaller but consistent representation-level gain.
 
-`repr_loss` supports raw MSE, normalized MSE, and cosine distance. The tuned model uses cosine representation KD because raw hidden-state MSE was too large in scale and dominated scalar ECR/ranking losses.
+### Best Training Command (CLIP clip_add + Full KD)
 
-### Best Training Command (CLIP clip_add + Curriculum + Hallucination)
-
-Step 1 — Extract CLIP ViT-B/32 keyframe features from the video archive:
+Step 1 — Extract CLIP ViT-B/32 keyframe features:
 
 ```bash
 python scripts/extract_clip_keyframe_features.py \
@@ -436,59 +339,39 @@ python scripts/extract_clip_keyframe_features.py \
   --n-frames 16 --device mps
 ```
 
-Step 2 — Train the student with CLIP `clip_add` fusion:
+Step 2 — Train the student:
 
 ```bash
 python scripts/train_official_student_kd.py \
   --artifact-dir results/original_snapugc_official_balanced_5000_artifacts_g2_32/teacher_artifacts \
   --labels-csv data/train_subset_balanced_5000.csv \
-  --save-dir results/kd_tuning_official_5k/improve_clip_vitb32_clipadd_curriculum_halluc \
+  --save-dir results/kd_tuning_official_5k/student_kd_full_clipadd \
   --input-preset visual_text_sound \
   --quality-features results/clip_vitb32_keyframe_features_5000.npz \
   --quality-fusion clip_add \
-  --use-hallucination --hallucination-feedback --feedback-start-epoch 10 \
   --hidden-dim 96 --layers 1 --heads 4 \
   --dropout 0.25 --epochs 100 --batch 32 --eval-batch 128 \
   --lr 5e-4 --weight-decay 0.02 \
   --val-ratio 0.2 --seed 42 --device mps --run-kind kd \
-  --kd-curriculum three_phase \
   --soft-weight 1.1 --clip-weight 0.08 \
   --temporal-weight 0.02 --fusion-weight 0.02 --attention-weight 0.005 \
   --hard-rank-weight 0.04 \
   --teacher-rank-weight 0.18 --teacher-pearson-weight 0.02 \
   --teacher-spearman-weight 0.015 --teacher-listwise-weight 0.02 \
-  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02 \
-  --action-hallucination-weight 0.03 --caption-hallucination-weight 0.05
+  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02
 ```
 
-See `docs/student_kd_architecture.md` for the full student KD diagram,
-input presets, loss terms, and ablation results.
-
-The report metric is `final_score = 0.6 * SRCC + 0.4 * PLCC`.
+See [student_kd_architecture.md](file:///Users/top/Documents/HCMUS/KhoaLuan/SnapUGC-LightKD/docs/student_kd_architecture.md) for more details.
 
 ## Experimental Results
 
-Below is the consolidated performance and footprint comparison on the balanced 5000-video subset (deterministic 4000/1000 split):
 
-| Model | Inputs (at Inference) | PLCC | SRCC | Final Score | Active Head Params | Total Params (with Ext.) |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Teacher (Upper Bound)** | Raw video + Title + Description | 0.7103 | 0.6995 | **0.7038** | 68.99M | **~1,801.7M** (~1.80B) |
-| **Student KD (Edge Ensemble)** | Frame fusion + CLIP + Lite Action + Text | 0.6372 | 0.6302 | **0.6330** | 4.42M | **~266.5M** (~14.8% of Teacher) |
-| **Baseline (No KD)** | Frame fusion + CLIP + Text | 0.5629 | 0.5569 | **0.5593** | 0.43M | **~260.0M** |
+| Model | Inputs | PLCC | SRCC | Final Score | Params (train / inference-pruned) | Inference time / video | VRAM / video |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Teacher (Upper Bound)** | Raw video + Title + Description | 0.7103 | 0.6995 | **0.7038** | ~1,801.7M / same | ~10.0s | ~15.0GB |
+| Baseline Student (No KD) | Frame fusion + CLIP + Text | 0.5629 | 0.5569 | 0.5593 | 433,092 / 378,723 | ≈0.68s* | ≈0.7GB* |
+| Student KD basic | Frame fusion + CLIP + Text | 0.6277 | 0.6193 | 0.6227 | 433,092 / 378,723 | ≈0.68s* | ≈0.7GB* |
+| Student KD full | Frame fusion + CLIP + Text | 0.6304 | 0.6252 | **0.6273** | 433,092 / 378,723 | ≈0.68s* | ≈0.7GB* |
+| **Proper / Full Pipeline KD** (`clip_mobilenet_text`) | CLIP + MobileNet + Text (raw video, self-contained) | 0.5798 | 0.5743 | 0.5765 | 1,821,060 / 1,530,435 | ≈0.27s* | ≈0.4GB* |
 
-*Note: Final Score = 0.6 * SRCC + 0.4 * PLCC. Active Head Params represent the trainable student/teacher classification layers, while Total Params include all external feature extractors (EfficientNetV2-S, UVQ, MobileNetV3-Small, CLIP ViT-B/32, and Stable Diffusion Text Encoder) required to run inference from raw video.*
-
-### Key Findings & Architecture Details
-
-1. **SOTA Edge Ensemble Structure (Score: 0.6330)**:
-   The deployable student ensemble is a weighted consensus ($0.50 \times y_1 + 0.50 \times y_2$) of two models trained with multi-tier KD:
-   *   `y_1` (`improve_large_h256_l3_lite_action`): 3 Transformer layers, 8 heads, 256-d hidden size. Uses frame fusion + MobileNetV3-Small spatiotemporal difference features (Lite Action). Individual score: **0.6290**.
-   *   `y_2` (`improve_clip_vitb32_clipadd_curriculum_halluc`): 1 Transformer layer, 4 heads, 96-d hidden size. Uses CLIP ViT-B/32 keyframe features. Individual score: **0.6285**.
-
-2. **Knowledge Distillation Impact**:
-   Applying multi-tier KD (logit matching, intermediate FitNets representation loss, attention transfer, and privileged feature hallucination) boosts the performance of the lightweight student architecture from a baseline of **0.5593** to **0.6330** in the ensemble, recapturing **90%** of the teacher's quality assessment capacity.
-
-3. **Edge Deployability & Footprint Reduction**:
-   By completely avoiding the teacher's massive mPLUG-2 (1.5B) and ResNet3D-18 (33M) networks, the Edge Ensemble shrinks the total parameter footprint from **1,801.7M** to **266.5M** parameters (only **14.8%** of the Teacher's size). The active classification heads are microscopic (only **4.4M** parameters), allowing real-time video evaluation on consumer edge devices and mobile phones.
-   
-   The text and image feature extraction models (like CLIP and Stable Diffusion text encoder) are standard pretrained weights and can be shared with other on-device applications, meaning the incremental memory footprint for video quality assessment is minimal.
+\*End-to-end standalone cost, đo trên Apple M-series (`mps`), 16 frame/video. Semi-independent rows cần `frame_fusion` (EfficientNetV2-s + distortion net + lớp fusion EVQA, ~0.42s) → ≈0.68s; Proper KD chỉ cần CLIP ViT-B/32 + MobileNetV3-Small → ≈0.27s. Student head chỉ ~3ms — chi phí do backbone trích đặc trưng chi phối. **Lưu ý**: `frame_fusion` đòi hỏi front-end **đã-train của teacher**, nên chỉ **Proper / Full Pipeline KD** mới thật sự tự chứa khi suy luận; các dòng semi-independent triển khai như một head nhẹ gắn lên bộ trích đặc trưng của teacher. Teacher ~10s/~15GB là ước lượng L4 của nhóm tác giả (thiết bị khác).

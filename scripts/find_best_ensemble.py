@@ -32,15 +32,14 @@ def main():
     _, val_rows = split_rows(rows, val_ratio=0.2, seed=42)
 
     # Candidate runs
+    tier3_runs = sorted(Path("results/loss_ablation_controlled_2026").glob("tier3_current_*"))
     candidate_dirs = [
-        "results/kd_tuning_official_5k/improve_large_h256_l3_lite_action",
-        "results/kd_tuning_official_5k/improve_clip_vitb32_clipadd_curriculum_halluc",
-        "results/kd_tuning_official_5k/improve_clip_vitb32_clipadd_curriculum_halluc_spkd",
-        "results/kd_tuning_official_5k/improve_temporal_conv_depthwise",
-        "results/kd_tuning_official_5k/improve_global_local_pool",
-        "results/kd_tuning_official_5k/improve_larger_moe_h192_l2_e4",
-        "results/kd_tuning_official_5k/runC_sles_h768_l6_shared_dp3",
-        "results/kd_tuning_official_5k/improve_ldl_cross_moe"
+        str(tier3_runs[0]) if tier3_runs else "results/loss_ablation_controlled_2026/tier3_current",
+        "results/loss_research_2026/A_rich_s43",
+        "results/loss_research_2026/A_lean_s43",
+        "results/kd_tuning_official_5k/v35_teacher_action_caption_clipadd_kd",
+        "results/kd_tuning_official_5k/student_kd_basic_soft_mse_clip_vitb32_clipadd",
+        "results/kd_tuning_official_5k/improve_clip_vitb32_clip_add_e100",
     ]
 
     valid_runs = []

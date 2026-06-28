@@ -34,7 +34,6 @@ runtime and writes shard files under:
 ```text
 teacher_artifacts/
   official_teacher_artifacts_0000_0024.npz
-  official_teacher_artifacts_0000_0024_captions.jsonl
   official_teacher_artifacts_0025_0049.npz
   ...
 ```
@@ -51,13 +50,17 @@ temporal_hidden
 caption_feature
 action_feature
 frame_fusion_feature
-text_tokens
 text_pooled
-attention_mean
 attention_importance
 ```
 
-These artifacts are later consumed by:
+The retained student consumes `teacher_ecr`, `clip_ecr`, `fusion_hidden`,
+`temporal_hidden`, `frame_fusion_feature`, `text_pooled`, and
+`attention_importance`. `caption_feature` and `action_feature` may still appear
+in historical shards exported from the full teacher, but current student
+training does not use them.
+
+The retained artifacts are later consumed by:
 
 ```bash
 python3 scripts/train_official_student_kd.py \
@@ -324,7 +327,6 @@ Expected artifact output:
 
 ```text
 teacher_artifacts/official_teacher_artifacts_0000_0024.npz
-teacher_artifacts/official_teacher_artifacts_0000_0024_captions.jsonl
 ...
 ```
 
@@ -413,60 +415,14 @@ n_rows = 5000
 keys include frame_fusion_feature, text_pooled, clip_ecr, fusion_hidden, ...
 ```
 
-Check official teacher score:
-
-```bash
-cat results/original_snapugc_official_balanced_5000_artifacts_g2_32/official_evqa_report.json
-```
-
-For the locked 5000 run used in this repo, the official teacher is expected to
-be around:
-
-```text
-PLCC  ~= 0.7146
-SRCC  ~= 0.7075
-Final ~= 0.7103
-```
+The controlled thesis metrics are consolidated in the `Experimental Results`
+section of the root README; do not mix full-run monitoring metrics into that
+split-level table.
 
 Small differences can happen if the subset differs, videos are missing, or the
 run is resumed incorrectly.
 
 ## Train Student From Synced Artifacts
-
-Example deployable KD student:
-
-```bash
-python3 scripts/train_official_student_kd.py \
-  --artifact-dir results/original_snapugc_official_balanced_5000_artifacts_g2_32/teacher_artifacts \
-  --labels-csv data/train_subset_balanced_5000.csv \
-  --save-dir results/kd_tuning_official_5k/v35_concat_source_embed_v22loss \
-  --input-preset visual_text_sound \
-  --hidden-dim 96 \
-  --layers 1 \
-  --heads 4 \
-  --dropout 0.22 \
-  --epochs 80 \
-  --batch 32 \
-  --eval-batch 128 \
-  --lr 5e-4 \
-  --weight-decay 0.01 \
-  --val-ratio 0.2 \
-  --seed 42 \
-  --split-seed 42 \
-  --device mps \
-  --run-kind kd \
-  --repr-loss cosine \
-  --soft-weight 1.1 \
-  --clip-weight 0.08 \
-  --temporal-weight 0.02 \
-  --fusion-weight 0.02 \
-  --attention-weight 0.005 \
-  --hard-rank-weight 0.04 \
-  --teacher-rank-weight 0.18 \
-  --teacher-pearson-weight 0.02 \
-  --teacher-spearman-weight 0.015 \
-  --teacher-listwise-weight 0.02
-```
 
 ## Troubleshooting
 

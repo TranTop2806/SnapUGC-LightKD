@@ -166,22 +166,19 @@ def predict_one(
             use_sound_text=input_info.get("use_sound_text", False),
             use_title_text=input_info.get("use_title_text", False),
             use_description_text=input_info.get("use_description_text", False),
-            use_text_tokens=input_info.get("use_text_tokens", False),
             use_quality_features=input_info.get("use_quality_features", False),
             quality_feature_dim=input_info.get("quality_feature_dim", 0),
             quality_fusion=input_info.get("quality_fusion", "input_concat"),
             use_dover_features=input_info.get("use_dover_features", False),
             dover_feature_dim=input_info.get("dover_feature_dim", 0),
             dover_fusion=input_info.get("dover_fusion", "input_concat"),
-            use_teacher_compressed_tokens=input_info.get("use_teacher_compressed_tokens", False),
             use_lite_action=input_info.get("use_lite_action", False),
             lite_action_dim=input_info.get("lite_action_dim", 0),
+            clip_primary=input_info.get("clip_primary", False),
         )
     else:
         preset = str(report.get("input_preset") or "visual_text_sound")
-        input_config = StudentInputConfig.from_preset(preset).with_text_tokens(
-            bool(report.get("use_text_tokens", False))
-        ).with_lite_action(
+        input_config = StudentInputConfig.from_preset(preset).with_lite_action(
             bool(report.get("lite_action_features")),
             int(report.get("lite_action_dim", 1152))
         )

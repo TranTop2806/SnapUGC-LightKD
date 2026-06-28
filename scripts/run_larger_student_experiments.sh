@@ -25,7 +25,6 @@ python3 scripts/train_official_student_kd.py \
   --input-preset visual_text_sound \
   --quality-features "$QUALITY_FEAT" \
   --quality-fusion clip_add \
-  --use-hallucination --hallucination-feedback --feedback-start-epoch 10 \
   --hidden-dim 192 --layers 2 --heads 8 \
   --dropout 0.25 --epochs 80 --batch 32 --eval-batch 128 \
   --lr 5e-4 --weight-decay 0.02 \
@@ -36,8 +35,7 @@ python3 scripts/train_official_student_kd.py \
   --hard-rank-weight 0.04 \
   --teacher-rank-weight 0.18 --teacher-pearson-weight 0.02 \
   --teacher-spearman-weight 0.015 --teacher-listwise-weight 0.02 \
-  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02 \
-  --action-hallucination-weight 0.03 --caption-hallucination-weight 0.05
+  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02
 
 # 2. Config B: Mixture-of-Experts (MoE) Student (~4.1M parameters)
 # hidden_dim=192, layers=2, heads=8, fusion_experts=4
@@ -50,7 +48,6 @@ python3 scripts/train_official_student_kd.py \
   --input-preset visual_text_sound \
   --quality-features "$QUALITY_FEAT" \
   --quality-fusion clip_add \
-  --use-hallucination --hallucination-feedback --feedback-start-epoch 10 \
   --hidden-dim 192 --layers 2 --heads 8 --fusion-experts 4 \
   --dropout 0.25 --epochs 80 --batch 32 --eval-batch 128 \
   --lr 5e-4 --weight-decay 0.02 \
@@ -61,8 +58,7 @@ python3 scripts/train_official_student_kd.py \
   --hard-rank-weight 0.04 \
   --teacher-rank-weight 0.18 --teacher-pearson-weight 0.02 \
   --teacher-spearman-weight 0.015 --teacher-listwise-weight 0.02 \
-  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02 \
-  --action-hallucination-weight 0.03 --caption-hallucination-weight 0.05
+  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02
 
 # 3. Config C: Large Student (~6.9M parameters, 1/10 of Teacher)
 # hidden_dim=256, layers=3, heads=8
@@ -75,7 +71,6 @@ python3 scripts/train_official_student_kd.py \
   --input-preset visual_text_sound \
   --quality-features "$QUALITY_FEAT" \
   --quality-fusion clip_add \
-  --use-hallucination --hallucination-feedback --feedback-start-epoch 10 \
   --hidden-dim 256 --layers 3 --heads 8 \
   --dropout 0.25 --epochs 80 --batch 32 --eval-batch 128 \
   --lr 5e-4 --weight-decay 0.02 \
@@ -86,8 +81,7 @@ python3 scripts/train_official_student_kd.py \
   --hard-rank-weight 0.04 \
   --teacher-rank-weight 0.18 --teacher-pearson-weight 0.02 \
   --teacher-spearman-weight 0.015 --teacher-listwise-weight 0.02 \
-  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02 \
-  --action-hallucination-weight 0.03 --caption-hallucination-weight 0.05
+  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02
 
 echo ""
 echo "=== ALL LARGER STUDENT EXPERIMENTS COMPLETED SUCCESSFULLY! ==="
