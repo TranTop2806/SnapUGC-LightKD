@@ -7,6 +7,64 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+
+def drop_path(x: torch.Tensor, drop_prob: float = 0.0, training: bool = False) -> torch.Tensor:
+    if drop_prob == 0. or not training:
+        return x
+    keep_prob = 1 - drop_prob
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+    random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+    random_tensor.floor_()  # binarize
+    output = x.div(keep_prob) * random_tensor
+    return output
+
+
+class DropPath(nn.Module):
+    def __init__(self, drop_prob: float = 0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return drop_path(x, self.drop_prob, self.training)
+
+
+class DropPathTransformerLayer(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int,
+        dropout: float = 0.1,
+        drop_path: float = 0.0,
+    ):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.activation = nn.GELU()
+
+    def forward(self, src: torch.Tensor, src_key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
+        # Pre-LN
+        x = self.norm1(src)
+        if src_key_padding_mask is not None:
+            attn_output, _ = self.self_attn(x, x, x, key_padding_mask=src_key_padding_mask, need_weights=False)
+        else:
+            attn_output, _ = self.self_attn(x, x, x, need_weights=False)
+        src = src + self.drop_path(self.dropout1(attn_output))
+
+        x = self.norm2(src)
+        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
+        src = src + self.drop_path(self.dropout2(x))
+        return src
+
+
 class AttentionPool(nn.Module):
     def __init__(self, dim: int, dropout: float = 0.1):
         super().__init__()
@@ -29,48 +87,6 @@ class AttentionPool(nn.Module):
         weights = torch.softmax(logits, dim=-1)
         pooled = torch.sum(tokens * weights.unsqueeze(-1), dim=1)
         return pooled, weights
-
-
-class ResidualBlock(nn.Module):
-    def __init__(self, dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.fc1 = nn.Linear(dim, dim)
-        self.norm = nn.LayerNorm(dim)
-        self.act = nn.GELU()
-        self.drop = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(dim, dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
-        x = self.fc1(x)
-        x = self.norm(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        return residual + x
-
-
-class AdvancedHallucinationHead(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, hidden_dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.proj_in = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-        )
-        self.res1 = ResidualBlock(hidden_dim, dropout)
-        self.res2 = ResidualBlock(hidden_dim, dropout)
-        self.proj_out = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, output_dim),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.proj_in(x)
-        x = self.res1(x)
-        x = self.res2(x)
-        x = self.proj_out(x)
-        return x
 
 
 def _identity_temporal_conv(
@@ -99,7 +115,7 @@ def _identity_temporal_conv(
 
 
 class OfficialArtifactStudent(nn.Module):
-    """Small source-aware student used for both deployable and upper-bound runs."""
+    """Small source-aware deployable student."""
 
     def __init__(
         self,
@@ -124,10 +140,9 @@ class OfficialArtifactStudent(nn.Module):
         semantic_gated_fusion: bool = False,
         shared_distill_dim: int = 0,
         fusion_experts: int = 1,
-        use_hallucination: bool = False,
-        hallucination_feedback: bool = False,
-        hallucination_feedback_dim: int = 0,
         temporal_conv: str = "none",
+        shared_transformer_weights: bool = False,
+        drop_path: float = 0.0,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -139,9 +154,6 @@ class OfficialArtifactStudent(nn.Module):
         self.semantic_gated_fusion = semantic_gated_fusion
         self.shared_distill_dim = shared_distill_dim
         self.fusion_experts = fusion_experts
-        self.use_hallucination = use_hallucination
-        self.hallucination_feedback = hallucination_feedback
-        self.hallucination_feedback_dim = hallucination_feedback_dim
         if fusion_mode not in {"concat", "cross_attention"}:
             raise ValueError(f"Unknown fusion_mode: {fusion_mode}")
         if temporal_aggregation not in {"attention", "global_local"}:
@@ -184,16 +196,48 @@ class OfficialArtifactStudent(nn.Module):
                 nn.Dropout(dropout),
             )
         self.pos_embed = nn.Parameter(torch.zeros(1, max_clips, hidden_dim))
-        layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim,
-            nhead=n_heads,
-            dim_feedforward=hidden_dim * 4,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.temporal_encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+        self.shared_transformer_weights = shared_transformer_weights
+        self.drop_path = drop_path
+        self.n_layers = n_layers
+
+        if shared_transformer_weights:
+            self.temporal_layer = DropPathTransformerLayer(
+                d_model=hidden_dim,
+                nhead=n_heads,
+                dim_feedforward=hidden_dim * 4,
+                dropout=dropout,
+                drop_path=drop_path,
+            )
+            self.temporal_layers = None
+            self.temporal_encoder = None
+        elif drop_path > 0.0:
+            self.temporal_layer = None
+            self.temporal_layers = nn.ModuleList(
+                [
+                    DropPathTransformerLayer(
+                        d_model=hidden_dim,
+                        nhead=n_heads,
+                        dim_feedforward=hidden_dim * 4,
+                        dropout=dropout,
+                        drop_path=drop_path,
+                    )
+                    for _ in range(n_layers)
+                ]
+            )
+            self.temporal_encoder = None
+        else:
+            self.temporal_layer = None
+            self.temporal_layers = None
+            layer = nn.TransformerEncoderLayer(
+                d_model=hidden_dim,
+                nhead=n_heads,
+                dim_feedforward=hidden_dim * 4,
+                dropout=dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            self.temporal_encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
         self.temporal_pool = AttentionPool(hidden_dim, dropout)
         self.local_pool = None
         self.global_pool = None
@@ -313,30 +357,6 @@ class OfficialArtifactStudent(nn.Module):
         if shared_distill_dim:
             self.student_to_shared = nn.Linear(hidden_dim, shared_distill_dim)
             self.teacher_to_shared = nn.Linear(teacher_hidden_dim, shared_distill_dim)
-        if use_hallucination:
-            self.action_hallucination_head = AdvancedHallucinationHead(
-                input_dim=hidden_dim,
-                output_dim=512,
-                hidden_dim=hidden_dim * 2,
-                dropout=dropout,
-            )
-            self.caption_hallucination_head = AdvancedHallucinationHead(
-                input_dim=hidden_dim,
-                output_dim=1024,
-                hidden_dim=hidden_dim * 2,
-                dropout=dropout,
-            )
-        else:
-            self.action_hallucination_head = None
-            self.caption_hallucination_head = None
-        self.hallucination_feedback_proj = None
-        if hallucination_feedback and use_hallucination:
-            total_halluc_dim = hallucination_feedback_dim if hallucination_feedback_dim > 0 else (512 + 1024)
-            self.hallucination_feedback_proj = nn.Sequential(
-                nn.Linear(total_halluc_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.GELU(),
-            )
     @staticmethod
     def _fit_type_embed(type_embed: torch.Tensor, length: int) -> torch.Tensor:
         if length <= type_embed.size(1):
@@ -362,10 +382,23 @@ class OfficialArtifactStudent(nn.Module):
                 raise ValueError("quality_inputs are required when quality_fusion is enabled")
             clip_hidden = clip_hidden + self.quality_proj(quality_inputs)
         clip_hidden = clip_hidden + self.pos_embed[:, : clip_hidden.size(1), :]
-        clip_hidden = self.temporal_encoder(
-            clip_hidden,
-            src_key_padding_mask=~clip_mask.bool(),
-        )
+        if self.shared_transformer_weights:
+            for _ in range(self.n_layers):
+                clip_hidden = self.temporal_layer(
+                    clip_hidden,
+                    src_key_padding_mask=~clip_mask.bool(),
+                )
+        elif self.temporal_layers is not None:
+            for layer in self.temporal_layers:
+                clip_hidden = layer(
+                    clip_hidden,
+                    src_key_padding_mask=~clip_mask.bool(),
+                )
+        else:
+            clip_hidden = self.temporal_encoder(
+                clip_hidden,
+                src_key_padding_mask=~clip_mask.bool(),
+            )
         if self.temporal_aggregation == "global_local":
             n_local = min(self.local_clips, clip_hidden.size(1))
             local_hidden, _ = self.local_pool(
@@ -378,12 +411,12 @@ class OfficialArtifactStudent(nn.Module):
             video_hidden, temporal_attention = self.temporal_pool(clip_hidden, clip_mask)
 
         if text_inputs.size(1) > 0:
-            text_tokens = self.text_proj(text_inputs)
-            text_tokens = text_tokens + self._fit_type_embed(
+            text_embeddings = self.text_proj(text_inputs)
+            text_embeddings = text_embeddings + self._fit_type_embed(
                 self.text_type_embed,
-                text_tokens.size(1),
+                text_embeddings.size(1),
             )
-            text_hidden, text_attention = self.text_pool(text_tokens, text_mask)
+            text_hidden, text_attention = self.text_pool(text_embeddings, text_mask)
         else:
             text_hidden = torch.zeros_like(video_hidden)
             text_attention = torch.zeros(text_inputs.size(0), 0, device=text_inputs.device)
@@ -391,8 +424,8 @@ class OfficialArtifactStudent(nn.Module):
         if self.fusion_mode == "cross_attention" and text_inputs.size(1) > 0:
             attended_clip_hidden, _ = self.cross_attention(
                 query=clip_hidden,
-                key=text_tokens,
-                value=text_tokens,
+                key=text_embeddings,
+                value=text_embeddings,
                 key_padding_mask=~text_mask.bool(),
                 need_weights=False,
             )
@@ -463,53 +496,6 @@ class OfficialArtifactStudent(nn.Module):
         if dist_logits is not None:
             outputs["ecr_dist_logits"] = dist_logits
             outputs["ecr_bin_centers"] = self.ecr_bin_centers
-        if self.use_hallucination:
-            pred_action = self.action_hallucination_head(cross_hidden)
-            pred_caption = self.caption_hallucination_head(cross_hidden)
-            outputs["pred_action_feature"] = pred_action
-            outputs["pred_caption_feature"] = pred_caption
-            if self.hallucination_feedback and self.hallucination_feedback_proj is not None:
-                # Self-loop: project hallucinated features back to hidden_dim and add to cross_hidden
-                halluc_concat = torch.cat([pred_action, pred_caption], dim=-1)
-                halluc_feedback = self.hallucination_feedback_proj(halluc_concat)
-                cross_hidden = cross_hidden + halluc_feedback
-                # Re-pool and re-fuse with updated cross_hidden
-                if self.temporal_aggregation == "global_local":
-                    n_local = min(self.local_clips, cross_hidden.size(1))
-                    local_hidden_fb, _ = self.local_pool(cross_hidden[:, :n_local, :], clip_mask[:, :n_local])
-                    global_hidden_fb, _ = self.global_pool(cross_hidden, clip_mask)
-                    video_hidden = torch.cat([local_hidden_fb, global_hidden_fb], dim=-1)
-                else:
-                    video_hidden, _ = self.temporal_pool(cross_hidden, clip_mask)
-                if self.text_gate is not None:
-                    video_hidden = video_hidden * self.text_gate(text_hidden)
-                fusion_inputs = torch.cat([video_hidden, text_hidden], dim=-1)
-                if self.fusion_expert_layers is None:
-                    fused_hidden = self.fusion(fusion_inputs)
-                else:
-                    router_logits = self.fusion_router(fusion_inputs)
-                    router_probs_fb = torch.softmax(router_logits, dim=-1)
-                    top1_fb = router_probs_fb.argmax(dim=-1)
-                    hard_gate_fb = F.one_hot(top1_fb, num_classes=router_probs_fb.size(-1)).type_as(router_probs_fb)
-                    gate_fb = hard_gate_fb - router_probs_fb.detach() + router_probs_fb
-                    expert_outputs_fb = torch.stack(
-                        [expert(fusion_inputs) for expert in self.fusion_expert_layers],
-                        dim=1,
-                    )
-                    fused_hidden = torch.sum(expert_outputs_fb * gate_fb.unsqueeze(-1), dim=1)
-                teacher_aligned_hidden = fused_hidden
-                ecr_hidden = fused_hidden
-                if self.dover_fusion != "none" and dover_inputs is not None and dover_inputs.numel() > 0:
-                    dover_hidden = self.dover_proj(dover_inputs)
-                    if self.dover_fusion == "late_add":
-                        ecr_hidden = fused_hidden + dover_hidden
-                    else:
-                        ecr_hidden = self.late_fusion(torch.cat([fused_hidden, dover_hidden], dim=-1))
-                predicted_ecr = self.ecr_head(ecr_hidden).squeeze(-1)
-                outputs["predicted_ecr"] = predicted_ecr
-                outputs["student_hidden"] = teacher_aligned_hidden
-                outputs["teacher_space_hidden"] = self.hidden_to_teacher(teacher_aligned_hidden)
-                outputs["teacher_space_temporal"] = self.hidden_to_teacher(cross_hidden)
         return outputs
 
 
@@ -615,6 +601,29 @@ def pearson_correlation_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.
         return pred.sum() * 0.0
     corr = (pred * target).mean() / pred_std.clamp_min(1e-6) / target_std.clamp_min(1e-6)
     return 1.0 - corr.clamp(-1.0, 1.0)
+
+
+def concordance_correlation_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """One minus Lin's CCC for batch-level continuous regression.
+
+    Unlike Pearson loss, CCC also penalizes mismatched means and variances. This
+    makes it a useful metric-aligned companion to pointwise ECR regression.
+    """
+    if pred.numel() < 2:
+        return pred.sum() * 0.0
+    target = target.detach()
+    pred_mean = pred.mean()
+    target_mean = target.mean()
+    pred_centered = pred - pred_mean
+    target_centered = target - target_mean
+    pred_var = pred_centered.pow(2).mean()
+    target_var = target_centered.pow(2).mean()
+    covariance = (pred_centered * target_centered).mean()
+    denominator = pred_var + target_var + (pred_mean - target_mean).pow(2)
+    if denominator.detach() < 1e-8:
+        return pred.sum() * 0.0
+    ccc = 2.0 * covariance / denominator.clamp_min(1e-8)
+    return 1.0 - ccc.clamp(-1.0, 1.0)
 
 
 def std_match_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -759,6 +768,29 @@ def contrastive_hidden_loss(
     return 0.5 * (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels))
 
 
+def similarity_preserving_loss(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+) -> torch.Tensor:
+    if student.size(0) < 2:
+        return student.sum() * 0.0
+    if student.ndim > 2:
+        student = student.flatten(start_dim=1)
+    if teacher.ndim > 2:
+        teacher = teacher.flatten(start_dim=1)
+    
+    s_norm = F.normalize(student, p=2, dim=-1)
+    t_norm = F.normalize(teacher.detach(), p=2, dim=-1)
+    
+    G_s = s_norm @ s_norm.T
+    G_t = t_norm @ t_norm.T
+    
+    G_s_norm = F.normalize(G_s, p=2, dim=-1)
+    G_t_norm = F.normalize(G_t, p=2, dim=-1)
+    
+    return F.mse_loss(G_s_norm, G_t_norm, reduction="mean")
+
+
 def compute_losses(
     outputs: dict[str, torch.Tensor],
     batch: dict[str, torch.Tensor],
@@ -771,6 +803,8 @@ def compute_losses(
     contrastive_temperature: float = 0.1,
     ldl_sigma: float = 0.06,
     focal_teacher_alpha: float = 0.0,
+    teacher_score_loss: str = "mse",
+    teacher_huber_beta: float = 0.05,
     hard_pair_similarity: float = 0.0,
     hard_pair_target_margin: float = 0.2,
     kd_transfer_beta: float = 0.0,
@@ -810,6 +844,13 @@ def compute_losses(
         )
         losses["hard_pearson"] = hard_pearson
         total = total + weights.get("hard_pearson", 0.0) * hard_pearson
+    if weights.get("hard_ccc", 0.0):
+        hard_ccc = concordance_correlation_loss(
+            outputs["predicted_ecr"],
+            batch["ecr_true"],
+        )
+        losses["hard_ccc"] = hard_ccc
+        total = total + weights.get("hard_ccc", 0.0) * hard_ccc
     if weights.get("hard_spearman", 0.0):
         hard_spearman = soft_spearman_loss(
             outputs["predicted_ecr"],
@@ -842,6 +883,12 @@ def compute_losses(
             transfer_weight = transfer_weight / transfer_weight.mean().clamp_min(1e-6)
             soft_base = (outputs["predicted_ecr"] - batch["teacher_ecr"]).pow(2)
             soft = (transfer_weight * soft_base).mean()
+        elif teacher_score_loss == "huber":
+            soft = F.smooth_l1_loss(
+                outputs["predicted_ecr"],
+                batch["teacher_ecr"],
+                beta=teacher_huber_beta,
+            )
         else:
             soft = focal_mse_loss(
                 outputs["predicted_ecr"],
@@ -920,6 +967,11 @@ def compute_losses(
                 outputs["predicted_ecr"],
                 batch["teacher_ecr"],
             )
+        if weights.get("teacher_ccc", 0.0):
+            optional_losses["teacher_ccc"] = concordance_correlation_loss(
+                outputs["predicted_ecr"],
+                batch["teacher_ecr"],
+            )
         if weights.get("teacher_spearman", 0.0):
             optional_losses["teacher_spearman"] = soft_spearman_loss(
                 outputs["predicted_ecr"],
@@ -972,19 +1024,10 @@ def compute_losses(
                 fusion_target,
                 temperature=contrastive_temperature,
             )
-        if weights.get("action_hallucination", 0.0) and "pred_action_feature" in outputs:
-            optional_losses["action_hallucination"] = masked_representation_loss(
-                outputs["pred_action_feature"],
-                batch["teacher_action"],
-                batch["clip_mask"],
-                mode=repr_loss,
-            )
-        if weights.get("caption_hallucination", 0.0) and "pred_caption_feature" in outputs:
-            optional_losses["caption_hallucination"] = masked_representation_loss(
-                outputs["pred_caption_feature"],
-                batch["teacher_caption_feature"],
-                batch["clip_mask"],
-                mode=repr_loss,
+        if weights.get("spkd", 0.0):
+            optional_losses["spkd"] = similarity_preserving_loss(
+                outputs["student_hidden"],
+                fusion_target,
             )
 
         losses.update(

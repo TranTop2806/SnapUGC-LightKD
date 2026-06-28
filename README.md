@@ -25,7 +25,7 @@ Balanced 5000-video subset
 ```
 
 The official teacher architecture is not reimplemented in
-`src/snapugc_lightkd/models.py`. A pinned local copy of the real teacher source
+`src/snapugc_lightkd/official_student.py`. A pinned local copy of the real teacher source
 lives in `third_party/SnapUGC_Engagement/ECR_inference/`. Runtime code patches
 a working copy only for compatibility/artifact export. See
 `docs/original_snapugc_exact_reproduction.md` for file-level architecture
@@ -71,6 +71,24 @@ data/official_5k_split/manifest.json
 In the code, the 1000 held-out rows are named `val` because they are used for
 model selection. In thesis writing, call them a fixed validation/test split and
 state the split protocol clearly.
+
+### Dataset Visualizations
+
+* **Dataset Samples**: A grid of sample video frame thumbnails from the SnapUGC dataset with their corresponding ECR quality scores overlayed:
+
+  ![Dataset Samples](./assets/dataset_samples.png)
+
+* **ECR Score Distribution**: The distribution of Engagement Continuation Ratio (ECR) scores across the balanced 5000-video subset, comparing the train and validation splits:
+
+  ![ECR Distribution](./assets/ecr_distribution.png)
+
+* **Dataset Overview & Statistics**: Analysis of ECR quality band bar chart, Cumulative Distribution Function (CDF), percentile stats, and metadata counts:
+
+  ![Dataset Overview](./assets/dataset_overview.png)
+
+* **ECR Quality Bands Detail**: Per-band score distribution comparison across low, medium, and high quality regions:
+
+  ![ECR Quality Bands](./assets/ecr_quality_bands.png)
 
 ## Repository Structure
 
@@ -118,7 +136,7 @@ This project has three model roles:
 
 3. Student KD
    Input: exactly the same reduced inputs as student baseline
-   Output: student ECR plus auxiliary student artifacts
+   Output: student ECR plus training-only KD outputs
    Loss: ground-truth ECR + teacher ECR/artifact/ranking distillation
 ```
 
@@ -189,40 +207,19 @@ LOCAL_OUT_DIR=results/original_snapugc_official_balanced_5000_artifacts_g2_32 \
 bash scripts/sync_gcp_official_5k_outputs.sh
 ```
 
-## Official Teacher Architecture
+## Architecture Overview
 
-The teacher is the released SnapUGC EVQA inference stack from the original
-authors. It is heavyweight because it combines multiple pretrained components:
+The three final architecture diagrams used in the thesis are shown below. They cover the official teacher artifact pipeline, the full Student KD training graph, and the self-contained Proper KD inference pipeline.
 
-```mermaid
-flowchart TD
-    V["Raw SnapUGC video"] --> F1["Sample frames/clips across video"]
-    M["Metadata: title + description"] --> T0["Text streams"]
+### 1. Official Teacher Architecture
 
-    F1 --> E1["EfficientNetV2-s semantic branch<br/>per-frame 528d"]
-    F1 --> D1["UVQ distortion branch<br/>per-frame 256d"]
-    F1 --> A1["ResNet3D-18 action branch<br/>per-clip 512d"]
-    F1 --> C1["mPLUG-2 video caption branch<br/>caption + 1024d clip feature"]
-    V --> S1["YAMNet sound labels<br/>top audio labels as text"]
+The teacher is the released SnapUGC EVQA inference stack from the original authors. It is a heavyweight, multimodal model that combines several pretrained extractors and text encoders to model video quality. 
 
-    M --> T0
-    S1 --> T0
-    C1 --> T0
-    T0 --> SD["Stable Diffusion tokenizer/text encoder<br/>77 x 768 per stream"]
+During the feature extraction phase, the frozen teacher extracts semantic frame features (EfficientNetV2-s), distortion features (UVQ), action features (ResNet3D-18), caption/CLIP features (mPLUG-2), sound labels (YAMNet), and text metadata (Stable Diffusion text encoder). These intermediate representations and attention matrices are exported as teacher artifact shards to guide student training.
 
-    E1 --> G1["Frame/clip grouping + FC"]
-    D1 --> G1
-    A1 --> X1["Cross-attention with text streams"]
-    SD --> X1
-    C1 --> X1
+**Teacher artifact extraction pipeline**
 
-    G1 --> FUS["EVQA multimodal fusion"]
-    X1 --> FUS
-    FUS --> TR["8 TransformerBlock temporal self-attention"]
-    TR --> HEAD["ECR output head"]
-    HEAD --> OUT["Teacher ECR"]
-    TR --> ART["Hidden/attention/artifact export for KD"]
-```
+![Official SnapUGC teacher architecture](./assets/architecture/teacher.svg)
 
 Teacher output files:
 
@@ -233,61 +230,31 @@ teacher_artifacts/*.npz               # hidden states, clip outputs, attention
 teacher_artifacts/*_captions.jsonl    # generated captions
 ```
 
-The official teacher is inference-only in this thesis: we use the released
-checkpoints and do not retrain the original teacher.
+The official teacher is inference-only in this project; we use the released checkpoints and do not retrain the original teacher.
 
-## Student Work
+### 2. Student KD Training Architecture
 
-Student baseline and KD are implemented separately from the official teacher.
-They train from synced teacher artifact shards using reduced student inputs.
+The Student is designed as a highly compact model optimized for edge deployment. Its lightweight temporal Transformer processes frame-level and text features; the Proper KD preset replaces the teacher-dependent visual frontend with deployable CLIP and MobileNet backbones.
 
-```mermaid
-flowchart TD
-    A["Official teacher artifact shards"] --> B["Allowed student inputs<br/>default: frame fusion + title/description text"]
-    A --> T1["Teacher ECR"]
-    A --> T2["Teacher clip ECR"]
-    A --> T3["Teacher hidden states"]
-    A --> T4["Teacher temporal attention"]
-    B --> S1["Compact student<br/>projection + small temporal Transformer"]
-    S1 --> S2["Student ECR"]
-    S1 --> S3["Student clip ECR / hidden / attention"]
-    S2 --> L1["Baseline loss<br/>MSE(true ECR)"]
-    S2 --> L2["KD loss<br/>true ECR + teacher ECR"]
-    S3 --> L2
-    T1 --> L2
-    T2 --> L2
-    T3 --> L2
-    T4 --> L2
-```
+The student architecture is evaluated under two distinct deployment paradigms:
+1. **Semi-independent / Head Distillation**: The student operates on pre-extracted video semantic and distortion features (`visual_text_sound` preset) plus CLIP features, and learns to mimic the teacher's fusion and prediction heads.
+2. **Proper / Full Pipeline KD**: The student processes raw video frames directly on the edge using lightweight backbones (CLIP ViT-B/32 + MobileNetV3-Small) and is fully self-contained.
 
-### Student Architecture (Best Single Model)
+The training diagram shows the full KD objective for the `visual_text_sound` student (`hidden_dim=96`, 1 Transformer layer, 4 heads). It uses `frame_fusion_feature`, CLIP keyframe features, and text context in the student forward pass. Ground-truth ECR and cached teacher outputs are connected only to the training objective and are not runtime inputs.
 
-The best deployable student adds CLIP ViT-B/32 keyframe embeddings via `clip_add`
-fusion into the hidden space after temporal encoding:
+![Student KD full training architecture](./assets/architecture/student_training.svg)
 
-```mermaid
-flowchart TD
-    VF["frame_fusion_feature\nT x 1024"] --> VP["Linear + LayerNorm + GELU\n1024 -> hidden_dim=96"]
-    VP --> PE["Positional embedding"]
-    PE --> TE["Temporal Transformer (1 layer, 4 heads)"]
-    TE --> AP["Attention pooling -> video_pooled (96-d)"]
+### 3. Student Proper KD Inference Architecture
 
-    CL["CLIP ViT-B/32 keyframe embeddings\nT x 512"] --> CP["Linear + LayerNorm -> 96-d"]
-    CP --> CAP["Attention pooling -> clip_pooled (96-d)"]
-    CAP -- clip_add --> AP
+The inference diagram shows the self-contained `clip_mobilenet_text` pipeline. Sampled raw-video frames are encoded by CLIP ViT-B/32 and MobileNetV3-Small, concatenated per time step, and processed by the compact temporal Transformer together with text context. The teacher, cached KD targets, and training-only KD heads are absent at inference.
 
-    TX["sound + title + description pooled\n3 x 768"] --> TP["Text projection + source embedding\n768 -> 96-d"]
-    TP --> TAP["Text attention pooling -> text_pooled (96-d)"]
+![Student Proper KD inference architecture](./assets/architecture/student_inference.svg)
 
-    AP --> CAT["Concat video_pooled + text_pooled (192-d)"]
-    TAP --> CAT
-    CAT --> FM["Fusion MLP (192 -> 96 -> 96)"]
-    FM --> HAL["Hallucination heads (train only)\npredict teacher action/caption embeddings"]
-    FM --> EH["Sigmoid ECR head"]
-    EH --> ECR["Student ECR"]
-```
+The two student diagrams intentionally document two evaluated deployment presets: the semi-independent `visual_text_sound` training configuration and the fully self-contained `clip_mobilenet_text` inference configuration.
 
-Hyperparameters (tuned compact student):
+### Student Model Hyperparameters
+
+The base compact student configuration (preset: `visual_text_sound`) uses:
 
 ```text
 hidden_dim = 96
@@ -295,28 +262,12 @@ Transformer layers = 1
 heads = 4
 dropout = 0.25
 max_clips = 16
-quality_fusion = clip_add    # key: add CLIP into hidden, not input concat
+quality_fusion = clip_add
 ```
 
-Baseline training objective:
+### Student KD Loss Formulation
 
-```text
-loss_baseline = MSE(student_ecr, true_ecr)
-```
-
-### Student KD Architecture And Loss
-
-The KD student uses the same input and architecture as its baseline counterpart.
-It adds auxiliary heads/projections only during training:
-
-```text
-student_clip_ecr: per-clip scalar predictions
-project(student_temporal): T x 512 teacher-space tokens
-project(student_hidden): 512 teacher-space pooled hidden state
-student_temporal_attention: T
-```
-
-KD objective:
+During training, the student optimizes the following multi-component objective:
 
 ```text
 loss_kd =
@@ -330,13 +281,54 @@ loss_kd =
 + teacher_rank  * pairwise_rank(student_ecr, teacher_ecr)
 ```
 
-`repr_loss` supports raw MSE, normalized MSE, and cosine distance. The tuned
-model uses cosine representation KD because raw hidden-state MSE was too large
-in scale and dominated scalar ECR/ranking losses.
+The eight terms above are the core objective. The deployed best configuration
+additionally enables small-weight auxiliary ranking/relation terms
+(`teacher_pearson`, `teacher_spearman`, `teacher_listwise`,
+`student_teacher_relation`, `contrastive_hidden`); these are training-only and
+contribute marginally on top of the core terms.
 
-### Best Training Command (CLIP clip_add + Curriculum + Hallucination)
+### Scientific Loss Functions & Published Papers
 
-Step 1 — Extract CLIP ViT-B/32 keyframe features from the video archive:
+Our KD architecture integrates advanced loss terms inspired by key scientific publications:
+
+1. **Classic Logit KD & Soft Targets** (Hinton et al., NeurIPS 2015)
+   * *Loss terms*: `soft_ecr` and `clip_ecr`.
+   * *Concept*: Distills continuous soft predictions, transferring the "dark knowledge" of the teacher's absolute quality ratings.
+   * *Paper*: *Distilling the Knowledge in a Neural Network*.
+
+2. **FitNets Feature Alignment** (Romero et al., ICLR 2015)
+   * *Loss terms*: `temporal` and `fusion`.
+   * *Concept*: Aligns intermediate hidden states using a projection head to map student dimensions to the teacher's space.
+   * *Paper*: *FitNets: Hints for Thin Deep Nets*.
+
+3. **Attention Transfer (AT)** (Zagoruyko & Komodakis, ICLR 2017)
+   * *Loss term*: `attention`.
+   * *Concept*: Forces the student's temporal attention weights to mimic the teacher's attention maps via KL Divergence.
+   * *Paper*: *Paying More Attention to Attention: Improving the Performance of Convolutional Neural Networks via Attention Transfer*.
+
+4. **Pairwise Ranking Loss**
+   * *Loss terms*: `hard_rank` and `teacher_rank`.
+   * *Concept*: Optimizes relative ranking order among samples to ensure the student ranks video quality consistently with the teacher and ground truth.
+
+### Loss Function Ablation Study
+
+To systematically evaluate the contribution of each distillation layer, we perform a grouped cumulative ablation on the validation split using the `visual_text_sound` preset. The results are verified from training logs on disk:
+
+| Tier | Loss Terms Included | Scientific Reference Mapping | Validation Final Score | Marginal Gain |
+| :--- | :--- | :--- | :---: | :---: |
+| **0. Baseline (No KD)** | `hard_ecr` | Standard regression baseline | **0.5609** | — |
+| **1. Logit KD** | `hard_ecr` + `soft_ecr` + `clip_ecr` | Hinton et al. (NeurIPS 2015) | **0.5982** | `+0.0373` |
+| **2. Feature & Attn KD** | Tier 1 + `temporal` + `fusion` + `attention` | Romero et al. (FitNets), Zagoruyko et al. (AT) | **0.6056** | `+0.0074` |
+| **3. Full Student KD** | Tier 2 + `hard_rank` + `teacher_rank` + relation losses | Pairwise/listwise ranking and hidden relation losses | **0.6273** | `+0.0217` |
+
+**Key Takeaways for Thesis Writing**:
+- **Logit matching (Tier 1)** contributes the single largest individual performance leap (`+0.0373`), demonstrating the value of transferring continuous soft targets compared to hard ground-truth labels alone.
+- **Pairwise and relation losses (Tier 3)** add a substantial gain of `+0.0217`, showing that relative order supervision is highly beneficial for subjective quality regression.
+- **Feature and attention alignment (Tier 2)** provide a smaller but consistent representation-level gain.
+
+### Best Training Command (CLIP clip_add + Full KD)
+
+Step 1 — Extract CLIP ViT-B/32 keyframe features:
 
 ```bash
 python scripts/extract_clip_keyframe_features.py \
@@ -347,81 +339,39 @@ python scripts/extract_clip_keyframe_features.py \
   --n-frames 16 --device mps
 ```
 
-Step 2 — Train the student with CLIP `clip_add` fusion:
+Step 2 — Train the student:
 
 ```bash
 python scripts/train_official_student_kd.py \
   --artifact-dir results/original_snapugc_official_balanced_5000_artifacts_g2_32/teacher_artifacts \
   --labels-csv data/train_subset_balanced_5000.csv \
-  --save-dir results/kd_tuning_official_5k/improve_clip_vitb32_clipadd_curriculum_halluc \
+  --save-dir results/kd_tuning_official_5k/student_kd_full_clipadd \
   --input-preset visual_text_sound \
   --quality-features results/clip_vitb32_keyframe_features_5000.npz \
   --quality-fusion clip_add \
-  --use-hallucination --hallucination-feedback --feedback-start-epoch 10 \
   --hidden-dim 96 --layers 1 --heads 4 \
   --dropout 0.25 --epochs 100 --batch 32 --eval-batch 128 \
   --lr 5e-4 --weight-decay 0.02 \
   --val-ratio 0.2 --seed 42 --device mps --run-kind kd \
-  --kd-curriculum three_phase \
   --soft-weight 1.1 --clip-weight 0.08 \
   --temporal-weight 0.02 --fusion-weight 0.02 --attention-weight 0.005 \
   --hard-rank-weight 0.04 \
   --teacher-rank-weight 0.18 --teacher-pearson-weight 0.02 \
   --teacher-spearman-weight 0.015 --teacher-listwise-weight 0.02 \
-  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02 \
-  --action-hallucination-weight 0.03 --caption-hallucination-weight 0.05
+  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02
 ```
 
-See `docs/student_kd_architecture.md` for the full student KD diagram,
-input presets, loss terms, and ablation results.
+See [student_kd_architecture.md](file:///Users/top/Documents/HCMUS/KhoaLuan/SnapUGC-LightKD/docs/student_kd_architecture.md) for more details.
 
-The report metric is `final_score = 0.6 * SRCC + 0.4 * PLCC`.
+## Experimental Results
 
-## Retained 5k Results
 
-All retained runs live under `results/kd_tuning_official_5k/`.
+| Model | Inputs | PLCC | SRCC | Final Score | Params (train / inference-pruned) | Inference time / video | VRAM / video |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Teacher (Upper Bound)** | Raw video + Title + Description | 0.7103 | 0.6995 | **0.7038** | ~1,801.7M / same | ~10.0s | ~15.0GB |
+| Baseline Student (No KD) | Frame fusion + CLIP + Text | 0.5629 | 0.5569 | 0.5593 | 433,092 / 378,723 | ≈0.68s* | ≈0.7GB* |
+| Student KD basic | Frame fusion + CLIP + Text | 0.6277 | 0.6193 | 0.6227 | 433,092 / 378,723 | ≈0.68s* | ≈0.7GB* |
+| Student KD full | Frame fusion + CLIP + Text | 0.6304 | 0.6252 | **0.6273** | 433,092 / 378,723 | ≈0.68s* | ≈0.7GB* |
+| **Proper / Full Pipeline KD** (`clip_mobilenet_text`) | CLIP + MobileNet + Text (raw video, self-contained) | 0.5798 | 0.5743 | 0.5765 | 1,821,060 / 1,530,435 | ≈0.27s* | ≈0.4GB* |
 
-```text
-Fair 1000-video validation split (seed=42, val_ratio=0.2):
-Official teacher (upper bound)          Final = 0.7038
-Compressed teacher-token student        Final = 0.6947   (not deployable)
-```
-
-| Run | Input | PLCC | SRCC | Final | Note |
-|---|---|---:|---:|---:|---|
-| `improve_clip_vitb32_clipadd_curriculum_halluc` | `visual_text_sound` + CLIP B/32 | 0.6325 | 0.6259 | **0.6285** | ✅ best deployable single model |
-| `clip_clipadd_curriculum_halluc_seed43` | same | 0.6273 | 0.6191 | 0.6223 | stability seed |
-| `clip_clipadd_curriculum_halluc_seed44` | same | 0.6243 | 0.6183 | 0.6207 | stability seed |
-| `improve_clip_vitb32_clip_add_e100` | `visual_text_sound` + CLIP B/32 | 0.6253 | 0.6175 | 0.6206 | clip_add, no curriculum |
-| `improve_strat3_hybrid_curriculum` | `visual_text_sound` + X3D-XS | 0.6079 | 0.6012 | 0.6039 | prev best before CLIP |
-| `v35_concat_source_embed_v22loss` | `visual_text_sound` | 0.6070 | 0.5999 | 0.6027 | baseline (no extra features) |
-| `v35_teacher_action_caption_clipadd_kd` | `visual_text_sound` + teacher feats | 0.6510 | 0.6432 | 0.6463 | not deployable (uses teacher feats at inference) |
-| `upper_teacher_compressed_tokens_baseline` | teacher compressed tokens | 0.7007 | 0.6907 | 0.6947 | not deployable |
-
-### Why CLIP `clip_add` works
-
-`frame_fusion_feature` (EfficientNetV2-s + UVQ) is optimised for visual quality
-estimation but lacks **semantic content richness** — what the video is *about*.
-CLIP ViT-B/32, trained on 400 M image–text pairs, supplies exactly that missing
-dimension (objects, activities, aesthetics, mood) without requiring teacher
-features at inference.
-
-Critically, `clip_add` (add CLIP into the hidden state after temporal encoding)
-outperforms `input_concat` (prepend CLIP to the raw clip features):
-
-| Fusion | clip_input_dim | Final |
-|---|---|---|
-| `input_concat` | 1536 (1024+512) | 0.6042 |
-| `clip_add` | 1024 (unchanged) | **0.6285** |
-
-With `input_concat` the temporal Transformer must align two distributions
-(EfficientNetV2-s vs CLIP) from scratch at input, which is hard. With `clip_add`
-the Transformer first learns temporal dynamics on the familiar 1024-d stream,
-then CLIP enriches the resulting pooled hidden vector — a much easier learning
-problem analogous to a late cross-modal residual.
-
-`visual_text_sound` does not use raw audio embeddings. It uses the same
-audio-derived representation as the official teacher: YAMNet top-5 sound labels
-encoded by the Stable Diffusion text encoder, stored as `text_pooled[0]`.
-
-See `docs/student_kd_architecture.md` for full details.
+\*End-to-end standalone cost, đo trên Apple M-series (`mps`), 16 frame/video. Semi-independent rows cần `frame_fusion` (EfficientNetV2-s + distortion net + lớp fusion EVQA, ~0.42s) → ≈0.68s; Proper KD chỉ cần CLIP ViT-B/32 + MobileNetV3-Small → ≈0.27s. Student head chỉ ~3ms — chi phí do backbone trích đặc trưng chi phối. **Lưu ý**: `frame_fusion` đòi hỏi front-end **đã-train của teacher**, nên chỉ **Proper / Full Pipeline KD** mới thật sự tự chứa khi suy luận; các dòng semi-independent triển khai như một head nhẹ gắn lên bộ trích đặc trưng của teacher. Teacher ~10s/~15GB là ước lượng L4 của nhóm tác giả (thiết bị khác).
