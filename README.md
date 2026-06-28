@@ -209,7 +209,7 @@ bash scripts/sync_gcp_official_5k_outputs.sh
 
 ## Architecture Overview
 
-The three final architecture diagrams used in the thesis are shown below. They cover the official teacher artifact pipeline, the full Student KD training graph, and the self-contained Proper KD inference pipeline.
+The three final architecture diagrams used in the thesis are shown below. They cover the official teacher artifact pipeline, the full Student KD training graph, and the Proper KD student inference graph.
 
 ### 1. Official Teacher Architecture
 
@@ -238,7 +238,7 @@ The Student is designed as a highly compact model optimized for edge deployment.
 
 The student architecture is evaluated under two distinct deployment paradigms:
 1. **Semi-independent / Head Distillation**: The student operates on pre-extracted video semantic and distortion features (`visual_text_sound` preset) plus CLIP features, and learns to mimic the teacher's fusion and prediction heads.
-2. **Proper / Full Pipeline KD**: The student processes raw video frames directly on the edge using lightweight backbones (CLIP ViT-B/32 + MobileNetV3-Small) and is fully self-contained.
+2. **Proper / Full Pipeline KD**: The student replaces the teacher-dependent visual frontend with CLIP ViT-B/32 and MobileNetV3-Small. The current experiment still reads cached `text_pooled` features, so it validates an independent raw-video visual path but is not yet a fully packaged raw-input pipeline.
 
 The training diagram shows the full KD objective for the `visual_text_sound` student (`hidden_dim=96`, 1 Transformer layer, 4 heads). It uses `frame_fusion_feature`, CLIP keyframe features, and text context in the student forward pass. Ground-truth ECR and cached teacher outputs are connected only to the training objective and are not runtime inputs.
 
@@ -246,11 +246,11 @@ The training diagram shows the full KD objective for the `visual_text_sound` stu
 
 ### 3. Student Proper KD Inference Architecture
 
-The inference diagram shows the self-contained `clip_mobilenet_text` pipeline. Sampled raw-video frames are encoded by CLIP ViT-B/32 and MobileNetV3-Small, concatenated per time step, and processed by the compact temporal Transformer together with text context. The teacher, cached KD targets, and training-only KD heads are absent at inference.
+The inference diagram shows the `clip_mobilenet_text` student graph. Sampled raw-video frames are encoded by CLIP ViT-B/32 and MobileNetV3-Small, concatenated per time step, and processed by the compact temporal Transformer together with text context. The teacher's visual features, cached KD targets, and training-only KD heads are absent from the ECR path. Reproducing `text_pooled` from raw sound/title/description still requires YAMNet and the Stable Diffusion v1.x CLIP text encoder.
 
 ![Student Proper KD inference architecture](./assets/architecture/student_inference.svg)
 
-The two student diagrams intentionally document two evaluated deployment presets: the semi-independent `visual_text_sound` training configuration and the fully self-contained `clip_mobilenet_text` inference configuration.
+The two student diagrams intentionally document two evaluated presets: the teacher-frontend-dependent `visual_text_sound` configuration and the independent-visual `clip_mobilenet_text` configuration.
 
 ### Student Model Hyperparameters
 
@@ -361,17 +361,37 @@ python scripts/train_official_student_kd.py \
   --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02
 ```
 
-See [student_kd_architecture.md](file:///Users/top/Documents/HCMUS/KhoaLuan/SnapUGC-LightKD/docs/student_kd_architecture.md) for more details.
+See [student_kd_architecture.md](./docs/student_kd_architecture.md) for more details.
 
 ## Experimental Results
 
 
-| Model | Inputs | PLCC | SRCC | Final Score | Params (train / inference-pruned) | Inference time / video | VRAM / video |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Teacher (Upper Bound)** | Raw video + Title + Description | 0.7103 | 0.6995 | **0.7038** | ~1,801.7M / same | ~10.0s | ~15.0GB |
-| Baseline Student (No KD) | Frame fusion + CLIP + Text | 0.5629 | 0.5569 | 0.5593 | 433,092 / 378,723 | ≈0.68s* | ≈0.7GB* |
-| Student KD basic | Frame fusion + CLIP + Text | 0.6277 | 0.6193 | 0.6227 | 433,092 / 378,723 | ≈0.68s* | ≈0.7GB* |
-| Student KD full | Frame fusion + CLIP + Text | 0.6304 | 0.6252 | **0.6273** | 433,092 / 378,723 | ≈0.68s* | ≈0.7GB* |
-| **Proper / Full Pipeline KD** (`clip_mobilenet_text`) | CLIP + MobileNet + Text (raw video, self-contained) | 0.5798 | 0.5743 | 0.5765 | 1,821,060 / 1,530,435 | ≈0.27s* | ≈0.4GB* |
+| Model | Evaluated inputs | PLCC | SRCC | Final Score | Student module (checkpoint / ECR path) | Raw-input E2E params* | Teacher size | E2E latency |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Teacher (Upper Bound)** | Raw video + title + description | 0.7103 | 0.6995 | **0.7038** | N/A | ~1,801.70M | 100% | ~10.0s† |
+| Baseline Student (No KD) | Cached frame-fusion + CLIP + text features | 0.5629 | 0.5569 | 0.5593 | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | Not measured |
+| Student KD basic | Cached frame-fusion + CLIP + text features | 0.6277 | 0.6193 | 0.6227 | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | Not measured |
+| Student KD full | Cached frame-fusion + CLIP + text features | 0.6304 | 0.6252 | **0.6273** | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | Not measured |
+| **Proper / Full Pipeline KD** (`clip_mobilenet_text`) | Raw-video CLIP + MobileNet; cached text features | 0.5798 | 0.5743 | 0.5765 | 1.821M / 1.530M | ~217.12M | 12.05% (8.30x smaller) | Not measured |
 
-\*End-to-end standalone cost, đo trên Apple M-series (`mps`), 16 frame/video. Semi-independent rows cần `frame_fusion` (EfficientNetV2-s + distortion net + lớp fusion EVQA, ~0.42s) → ≈0.68s; Proper KD chỉ cần CLIP ViT-B/32 + MobileNetV3-Small → ≈0.27s. Student head chỉ ~3ms — chi phí do backbone trích đặc trưng chi phối. **Lưu ý**: `frame_fusion` đòi hỏi front-end **đã-train của teacher**, nên chỉ **Proper / Full Pipeline KD** mới thật sự tự chứa khi suy luận; các dòng semi-independent triển khai như một head nhẹ gắn lên bộ trích đặc trưng của teacher. Teacher ~10s/~15GB là ước lượng L4 của nhóm tác giả (thiết bị khác).
+\*`Raw-input E2E params` counts every neural module required to reproduce the evaluated inputs from raw video/audio/title/description, while pruning outputs that are unused by the ECR path. Tokenizers, video/audio decoding, and other parameter-free preprocessing are excluded. These are architecture-derived counts; only the student checkpoint counts come directly from saved state dictionaries.
+
+| Raw-input pipeline component | Semi-independent students | Proper KD |
+| :--- | ---: | ---: |
+| EfficientNetV2-S feature path | 19,847,248 | — |
+| UVQ Distortion feature path | 29,842,563 | — |
+| EVQA frame-fusion layers | 9,380,352 | — |
+| CLIP ViT-B/32 visual tower | 87,849,216 | 87,849,216 |
+| MobileNetV3-Small feature path | — | 927,008 |
+| Stable Diffusion v1.x CLIP text encoder | 123,060,480 | 123,060,480 |
+| YAMNet sound classifier | 3,751,369 | 3,751,369 |
+| Deployed student ECR path | 378,723 | 1,530,435 |
+| **Total** | **274,109,951** | **217,118,508** |
+
+The three semi-independent checkpoints instantiate the same `hidden_dim=96`, one-layer student. Full KD changes the objective rather than the backbone: score, ranking, relation, attention, and representation losses add no learned parameters. Their checkpoints contain 433,092 parameters, including the training-only `clip_ecr_head` (4,705) and `hidden_to_teacher` (49,664); pruning both leaves the 378,723-parameter ECR path. Proper KD follows the same accounting: 1,530,435 ECR-path parameters + 18,625 in `clip_ecr_head` + 272,000 in `hidden_to_teacher` = 1,821,060 checkpoint parameters.
+
+†The teacher latency/VRAM figures are estimates reported for an NVIDIA L4 environment. Previous student timing estimates measured only selected feature-extraction components on Apple M-series hardware and excluded the complete text/audio path, so they are not presented as fair end-to-end latency results. A publication-quality speed comparison must benchmark all pipelines from the same raw inputs on the same device, batch size, frame count, precision, and warm-up protocol.
+
+### KD Efficiency Reporting Convention
+
+Major KD work reports the model that actually runs at inference, not only the newly trained head. [DistilBERT](https://arxiv.org/abs/1910.01108) reports both model-size reduction and inference speed, while [TinyBERT](https://aclanthology.org/2020.findings-emnlp.372/) places `#Params`, FLOPs, and measured speedup beside task quality. Following that convention, this README uses raw-input end-to-end parameters for compression claims and retains student-module parameters only for checkpoint reproducibility. FLOPs and same-hardware latency remain future measurements and must not be inferred from parameter count alone.
