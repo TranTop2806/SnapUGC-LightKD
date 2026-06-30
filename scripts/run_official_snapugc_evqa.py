@@ -167,9 +167,24 @@ def patch_official_code(
         "bs = int(os.environ.get('SNAPUGC_MPLUG_CLIP_BATCH', '4'))",
     )
     text = text.replace(
+        "array_ = read_data(path, num_frame=32)",
+        'caption_num_frames = int(os.environ.get("SNAPUGC_CAPTION_NUM_FRAMES", "8"))\n'
+        "        array_ = read_data(path, num_frame=caption_num_frames)",
+    )
+    text = text.replace(
         "DataLoader(dataset, batch_size=1, shuffle=False, num_workers=1,collate_fn=None,pin_memory=False)",
         "DataLoader(dataset, batch_size=1, shuffle=False, num_workers=int(os.environ.get('SNAPUGC_DATALOADER_WORKERS', '1')), collate_fn=None, pin_memory=False)",
     )
+    if "@torch.inference_mode()\ndef calculate" not in text:
+        text = text.replace(
+            "def calculate(videos_dir, videos_files):",
+            "@torch.inference_mode()\ndef calculate(videos_dir, videos_files):",
+        )
+    if "torch.cuda.empty_cache()" not in text:
+        text = text.replace(
+            "        print(idx, video_id, out0_val)",
+            "        print(idx, video_id, out0_val)\n        torch.cuda.empty_cache()",
+        )
 
     # Recent CLIPTextModel versions may not expose position_ids as a loadable
     # buffer, while the official checkpoint contains it. This does not change

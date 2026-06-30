@@ -29,6 +29,13 @@ extraction = [
 ]
 notebook = ["jupyter", "matplotlib"]
 dev = ["ruff>=0.8.0"]
+demo = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "python-multipart>=0.0.9",
+  "imageio>=2.34",
+  "imageio-ffmpeg>=0.5",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

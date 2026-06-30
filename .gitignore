@@ -17,6 +17,10 @@ venv/
 data/*.csv
 data/train_videos/
 data/official_balanced_5000_videos/
+data/official_5k_split/test_videos/
+data/official_5k_split/train_videos/
+data/official_5k_split/*.log
+data/official_5k_split/*_log.json
 data/raw/
 data/processed/
 features/
