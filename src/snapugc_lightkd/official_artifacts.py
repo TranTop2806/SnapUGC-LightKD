@@ -141,7 +141,10 @@ def load_official_artifact_rows(
     *,
     require_complete_labels: bool = True,
     ragged_keys: Iterable[str] = DEFAULT_RAGGED_KEYS,
+    max_rows: int | None = None,
 ) -> list[dict[str, object]]:
+    if max_rows is not None and max_rows < 1:
+        raise ValueError("max_rows must be positive when provided")
     artifact_dir = Path(artifact_dir)
     shard_paths = sorted(artifact_dir.glob("official_teacher_artifacts_*.npz"))
     if not shard_paths:
@@ -172,6 +175,10 @@ def load_official_artifact_rows(
                     row[key] = _unpack_ragged(npz, key, i)
                 rows.append(row)
                 seen.add(video_id)
+                if max_rows is not None and len(rows) >= max_rows:
+                    break
+        if max_rows is not None and len(rows) >= max_rows:
+            break
     rows.sort(key=lambda row: int(row["order_idx"]))
     return rows
 

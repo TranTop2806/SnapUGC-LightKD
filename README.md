@@ -366,13 +366,13 @@ See [student_kd_architecture.md](./docs/student_kd_architecture.md) for more det
 ## Experimental Results
 
 
-| Model | Evaluated inputs | PLCC | SRCC | Final Score | Student module (checkpoint / ECR path) | Raw-input E2E params* | Teacher size | E2E latency |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Teacher (Upper Bound)** | Raw video + title + description | 0.7103 | 0.6995 | **0.7038** | N/A | ~1,801.70M | 100% | ~10.0s† |
-| Baseline Student (No KD) | Cached frame-fusion + CLIP + text features | 0.5629 | 0.5569 | 0.5593 | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | Not measured |
-| Student KD basic | Cached frame-fusion + CLIP + text features | 0.6277 | 0.6193 | 0.6227 | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | Not measured |
-| Student KD full | Cached frame-fusion + CLIP + text features | 0.6304 | 0.6252 | **0.6273** | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | Not measured |
-| **Proper / Full Pipeline KD** (`clip_mobilenet_text`) | Raw-video CLIP + MobileNet; cached text features | 0.5798 | 0.5743 | 0.5765 | 1.821M / 1.530M | ~217.12M | 12.05% (8.30x smaller) | Not measured |
+| Model | Evaluated inputs | PLCC | SRCC | Final Score | Student module (checkpoint / ECR path) | Raw-input E2E params* | Teacher size | Student forward latency‡ | E2E latency |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Teacher (Upper Bound)** | Raw video + title + description | 0.7103 | 0.6995 | **0.7038** | N/A | ~1,801.70M | 100% | N/A | ~10.0s† |
+| Baseline Student (No KD) | Cached frame-fusion + CLIP + text features | 0.5629 | 0.5569 | 0.5593 | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | 2.15 ms (p90 2.36 ms) | Not measured |
+| Student KD basic | Cached frame-fusion + CLIP + text features | 0.6277 | 0.6193 | 0.6227 | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | 1.84 ms (p90 2.29 ms) | Not measured |
+| Student KD full | Cached frame-fusion + CLIP + text features | 0.6304 | 0.6252 | **0.6273** | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | 2.14 ms (p90 4.06 ms) | Not measured |
+| **Proper / Full Pipeline KD** (`clip_mobilenet_text`) | Raw-video CLIP + MobileNet; cached text features | 0.5798 | 0.5743 | 0.5765 | 1.821M / 1.530M | ~217.12M | 12.05% (8.30x smaller) | 2.70 ms (p90 3.49 ms) | Not measured |
 
 \*`Raw-input E2E params` counts every neural module required to reproduce the evaluated inputs from raw video/audio/title/description, while pruning outputs that are unused by the ECR path. Tokenizers, video/audio decoding, and other parameter-free preprocessing are excluded. These are architecture-derived counts; only the student checkpoint counts come directly from saved state dictionaries.
 
@@ -391,6 +391,17 @@ See [student_kd_architecture.md](./docs/student_kd_architecture.md) for more det
 The three semi-independent checkpoints instantiate the same `hidden_dim=96`, one-layer student. Full KD changes the objective rather than the backbone: score, ranking, relation, attention, and representation losses add no learned parameters. Their checkpoints contain 433,092 parameters, including the training-only `clip_ecr_head` (4,705) and `hidden_to_teacher` (49,664); pruning both leaves the 378,723-parameter ECR path. Proper KD follows the same accounting: 1,530,435 ECR-path parameters + 18,625 in `clip_ecr_head` + 272,000 in `hidden_to_teacher` = 1,821,060 checkpoint parameters.
 
 †The teacher latency/VRAM figures are estimates reported for an NVIDIA L4 environment. Previous student timing estimates measured only selected feature-extraction components on Apple M-series hardware and excluded the complete text/audio path, so they are not presented as fair end-to-end latency results. A publication-quality speed comparison must benchmark all pipelines from the same raw inputs on the same device, batch size, frame count, precision, and warm-up protocol.
+
+‡Student forward latency is a measured batch-1, single-video model latency, not raw-input end-to-end latency. The benchmark used video `5e14a1dfea4201ade02cbc5ddb31bb52`, Apple M2 (8-core GPU) through PyTorch MPS, 100 warm-up iterations, and 1,000 synchronized timed iterations. It includes only the forward pass from already prepared cached tensors to the ECR prediction; model loading, decoding, feature extraction, collation, and host-to-device transfer are excluded. Median is reported first, with p90 in parentheses. The three semi-independent students have the same inference architecture, so their small differences are runtime noise rather than a KD compute cost. Full measurements and tensor shapes are stored in [`docs/benchmarks/student_forward_latency_apple_m2.json`](./docs/benchmarks/student_forward_latency_apple_m2.json) and can be reproduced with:
+
+```bash
+python3 scripts/benchmark_student_latency.py \
+  --device mps \
+  --hardware-label "Apple M2 (8-core GPU)" \
+  --warmup 100 \
+  --repeats 1000 \
+  --out docs/benchmarks/student_forward_latency_apple_m2.json
+```
 
 ### KD Efficiency Reporting Convention
 
