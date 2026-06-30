@@ -120,6 +120,23 @@ pip install -e .
 On GCloud/L4, install the CUDA-compatible PyTorch wheel before running the
 official teacher wrapper.
 
+### New-video explanation demo
+
+The upload demo uses the checked-in Proper KD report/checkpoint under
+`results/proper_kd/medium_kd_h192_l2/` by default. It extracts the same CLIP
+ViT-B/32 and MobileNetV3-Small visual features used for Proper KD, then runs
+student attribution, zero-input ablation, semantic labeling, and an optional
+LLM verbalizer.
+
+```bash
+pip install -r requirements-demo.txt
+python3 -m uvicorn demo_app.app:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000`. The first analysis may take longer while the
+pretrained visual/text encoders are downloaded and cached. Without an LLM API
+key, the demo uses its deterministic Vietnamese explanation template.
+
 ## Model Inputs And Outputs
 
 This project has three model roles:

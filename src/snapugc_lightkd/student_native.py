@@ -12,6 +12,7 @@ import hashlib
 import math
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -41,20 +42,22 @@ class NativeInputs:
     clip_mask: torch.Tensor
     text_inputs: torch.Tensor
     text_mask: torch.Tensor
-    teacher_attention: torch.Tensor
+    teacher_attention: torch.Tensor | None
     clips: list[NativeClip]
     text_streams: list[str]
     metadata: dict[str, Any]
     heuristic_score: float
 
     def as_batch(self) -> dict[str, object]:
-        return {
+        batch: dict[str, object] = {
             "clip_inputs": self.clip_inputs.unsqueeze(0),
             "clip_mask": self.clip_mask.unsqueeze(0),
             "text_inputs": self.text_inputs.unsqueeze(0),
             "text_mask": self.text_mask.unsqueeze(0),
-            "teacher_attention": self.teacher_attention.unsqueeze(0),
         }
+        if self.teacher_attention is not None:
+            batch["teacher_attention"] = self.teacher_attention.unsqueeze(0)
+        return batch
 
 
 def build_native_student_inputs(
@@ -68,6 +71,8 @@ def build_native_student_inputs(
     device: torch.device | str = "cpu",
     efficientnet_weights: str | Path | None = None,
     no_visual_encoder: bool = False,
+    input_preset: str = "clip_mobilenet_text",
+    text_encoder_model: str = "CompVis/stable-diffusion-v1-4",
 ) -> NativeInputs:
     """Extract teacher-free student inputs from a raw video and metadata."""
 
@@ -76,8 +81,20 @@ def build_native_student_inputs(
         raise RuntimeError(f"Could not decode any frame from {video_path}")
 
     metrics = compute_clip_metrics(frames)
-    visual_features = low_level_feature_matrix(metrics, clip_dim=clip_dim)
-    if not no_visual_encoder:
+    if input_preset == "clip_mobilenet_text":
+        if no_visual_encoder:
+            raise ValueError("clip_mobilenet_text requires the CLIP and MobileNet visual encoders")
+        visual_features = clip_mobilenet_feature_matrix(frames, device=device)
+        if visual_features.shape[-1] != clip_dim:
+            raise ValueError(
+                f"Proper KD extractor produced {visual_features.shape[-1]} features, "
+                f"but checkpoint expects clip_input_dim={clip_dim}"
+            )
+        extractor = "open_clip_vit_b32_plus_mobilenet_v3_small"
+    else:
+        visual_features = low_level_feature_matrix(metrics, clip_dim=clip_dim)
+        extractor = "low_level_metrics"
+    if input_preset != "clip_mobilenet_text" and not no_visual_encoder:
         try:
             encoded = efficientnet_feature_matrix(
                 frames,
@@ -86,6 +103,7 @@ def build_native_student_inputs(
                 weights_path=efficientnet_weights,
             )
             visual_features = 0.82 * encoded + 0.18 * visual_features
+            extractor = "efficientnet_v2_s_plus_low_level_metrics"
         except Exception:
             # The demo must remain usable offline; low-level features are enough
             # to keep prediction/explanation operational if weights are missing.
@@ -105,28 +123,47 @@ def build_native_student_inputs(
             )
         )
 
-    text_rows: list[np.ndarray] = []
-    text_streams: list[str] = []
     clean_title = clean_text(title)
     clean_description = clean_text(description)
-    if clean_title:
-        text_rows.append(hash_text_embedding(clean_title, dim=text_dim))
-        text_streams.append("title")
-    if clean_description:
-        text_rows.append(hash_text_embedding(clean_description, dim=text_dim))
-        text_streams.append("description")
-    if not text_rows:
-        text_rows.append(np.zeros((text_dim,), dtype=np.float32))
-        text_streams.append("empty_metadata")
-
-    text_inputs = np.stack(text_rows).astype(np.float32, copy=False)
+    if input_preset == "clip_mobilenet_text":
+        # Training uses the first three pooled teacher text streams in this
+        # exact order: YAMNet sound labels, title, description. Raw-video demo
+        # currently has no lightweight audio labeler, so the sound string is
+        # intentionally empty while title/description use the same SD v1.4
+        # CLIP text encoder and mean-token pooling as artifact export.
+        text_streams = ["sound", "title", "description"]
+        text_inputs = stable_diffusion_text_embeddings(
+            ["", clean_title or "", clean_description or ""],
+            device=device,
+            model_id=text_encoder_model,
+        )
+        if text_inputs.shape[-1] != text_dim:
+            raise ValueError(
+                f"Text encoder produced {text_inputs.shape[-1]} features, "
+                f"but checkpoint expects text_input_dim={text_dim}"
+            )
+        text_extractor = f"{text_encoder_model}:mean_token_pool"
+    else:
+        text_rows: list[np.ndarray] = []
+        text_streams: list[str] = []
+        if clean_title:
+            text_rows.append(hash_text_embedding(clean_title, dim=text_dim))
+            text_streams.append("title")
+        if clean_description:
+            text_rows.append(hash_text_embedding(clean_description, dim=text_dim))
+            text_streams.append("description")
+        if not text_rows:
+            text_rows.append(np.zeros((text_dim,), dtype=np.float32))
+            text_streams.append("empty_metadata")
+        text_inputs = np.stack(text_rows).astype(np.float32, copy=False)
+        text_extractor = "deterministic_hash"
     heuristic = heuristic_engagement_score(metrics, clean_title, clean_description)
     return NativeInputs(
         clip_inputs=torch.from_numpy(visual_features.astype(np.float32, copy=False)),
         clip_mask=torch.ones((n,), dtype=torch.bool),
         text_inputs=torch.from_numpy(text_inputs),
-        text_mask=torch.ones((len(text_rows),), dtype=torch.bool),
-        teacher_attention=torch.ones((n,), dtype=torch.float32) / max(n, 1),
+        text_mask=torch.ones((len(text_inputs),), dtype=torch.bool),
+        teacher_attention=None,
         clips=clips,
         text_streams=text_streams,
         metadata={
@@ -134,6 +171,9 @@ def build_native_student_inputs(
             "description": clean_description,
             "video_path": str(Path(video_path)),
             "total_frames": int(total_frames),
+            "visual_extractor": extractor,
+            "text_extractor": text_extractor,
+            "sound_stream": "empty_no_audio_labeler",
         },
         heuristic_score=float(heuristic),
     )
@@ -289,6 +329,84 @@ def efficientnet_feature_matrix(
     if n < clip_dim:
         out[:, n:] = feats.mean(dim=-1, keepdim=True)
     return out.detach().cpu().numpy().astype(np.float32, copy=False)
+
+
+@lru_cache(maxsize=4)
+def _load_proper_visual_encoders(device_name: str):
+    import open_clip
+    from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
+
+    device = torch.device(device_name)
+    clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32",
+        pretrained="openai",
+        device=device,
+    )
+    clip_model.eval()
+    mobile_weights = MobileNet_V3_Small_Weights.DEFAULT
+    mobile_model = mobilenet_v3_small(weights=mobile_weights).features.to(device).eval()
+    return clip_model, clip_preprocess, mobile_model, mobile_weights.transforms()
+
+
+@torch.no_grad()
+def clip_mobilenet_feature_matrix(
+    frames: list[Image.Image],
+    *,
+    device: torch.device | str = "cpu",
+) -> np.ndarray:
+    """Reproduce the Proper KD CLIP(512)+MobileNet action(1152) input."""
+
+    device = torch.device(device)
+    clip_model, clip_preprocess, mobile_model, mobile_preprocess = _load_proper_visual_encoders(
+        str(device)
+    )
+    clip_batch = torch.stack([clip_preprocess(frame) for frame in frames]).to(device)
+    clip_features = F.normalize(clip_model.encode_image(clip_batch), dim=-1).float()
+
+    mobile_batch = torch.stack([mobile_preprocess(frame) for frame in frames]).to(device)
+    spatial = mobile_model(mobile_batch).mean(dim=(2, 3)).float()
+    motion = torch.zeros_like(spatial)
+    motion[1:] = spatial[1:] - spatial[:-1]
+    lite_action = torch.cat([spatial, motion], dim=-1)
+    return (
+        torch.cat([clip_features, lite_action], dim=-1)
+        .detach()
+        .cpu()
+        .numpy()
+        .astype(np.float32, copy=False)
+    )
+
+
+@lru_cache(maxsize=4)
+def _load_sd_text_encoder(model_id: str, device_name: str):
+    from transformers import CLIPTextModel, CLIPTokenizer
+
+    tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer")
+    encoder = CLIPTextModel.from_pretrained(model_id, subfolder="text_encoder")
+    encoder.eval().to(torch.device(device_name))
+    return tokenizer, encoder
+
+
+@torch.no_grad()
+def stable_diffusion_text_embeddings(
+    texts: list[str],
+    *,
+    device: torch.device | str = "cpu",
+    model_id: str = "CompVis/stable-diffusion-v1-4",
+) -> np.ndarray:
+    """Match teacher artifact text pooling: CLIP tokens then mean over 77 tokens."""
+
+    device = torch.device(device)
+    tokenizer, encoder = _load_sd_text_encoder(model_id, str(device))
+    tokens = tokenizer(
+        texts,
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt",
+    )
+    hidden = encoder(tokens.input_ids.to(device))[0]
+    return hidden.mean(dim=1).detach().cpu().numpy().astype(np.float32, copy=False)
 
 
 def hash_text_embedding(text: str, *, dim: int = TEXT_DIM) -> np.ndarray:
@@ -591,7 +709,12 @@ def clean_text(value: str | None) -> str | None:
 
 def _even_indices(total: int, max_clips: int) -> list[int]:
     count = min(max_clips, max(1, total))
-    return sorted({int(round(x)) for x in np.linspace(0, total - 1, count)})
+    if total <= count:
+        return list(range(total))
+    # Match the CLIP/Lite Action training extractors: sample the midpoint of
+    # every uniform temporal bin, rather than including the first/last frames.
+    step = total / count
+    return [int(step * idx + step / 2) for idx in range(count)]
 
 
 def _clip01(value: float | np.ndarray) -> float:

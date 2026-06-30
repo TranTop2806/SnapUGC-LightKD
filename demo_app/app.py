@@ -47,11 +47,13 @@ def index() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict[str, object]:
+    report = resolve_report_path()
+    checkpoint = resolve_checkpoint_path(report)
     return {
-        "ok": True,
+        "ok": report is not None and checkpoint is not None,
         "root": str(ROOT),
-        "report_json": str(resolve_report_path()),
-        "checkpoint": str(resolve_checkpoint_path(resolve_report_path())),
+        "report_json": str(report) if report else None,
+        "checkpoint": str(checkpoint) if checkpoint else None,
         "efficientnet_weights": str(resolve_efficientnet_path()),
         "llm_explainer": bool(os.environ.get("SNAPUGC_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")),
     }
@@ -82,6 +84,14 @@ async def analyze(
 
     report_path = resolve_report_path()
     checkpoint_path = resolve_checkpoint_path(report_path)
+    if report_path is None or checkpoint_path is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Proper KD report/checkpoint is unavailable. Set SNAPUGC_REPORT_JSON "
+                "and SNAPUGC_STUDENT_CHECKPOINT before running the demo."
+            ),
+        )
     labels_path = resolve_labels_path()
     efficientnet_path = resolve_efficientnet_path()
     cmd = [
@@ -118,7 +128,7 @@ async def analyze(
             text=True,
             capture_output=True,
             check=True,
-            timeout=int(os.environ.get("SNAPUGC_DEMO_TIMEOUT", "240")),
+            timeout=int(os.environ.get("SNAPUGC_DEMO_TIMEOUT", "600")),
         )
     except subprocess.CalledProcessError as exc:
         raise HTTPException(
@@ -174,9 +184,9 @@ def resolve_report_path() -> Path | None:
         candidates.append(Path(raw).expanduser())
     candidates.extend(
         [
-            ROOT / "results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json",
+            ROOT / "results/proper_kd/medium_kd_h192_l2/official_student_kd_report.json",
             Path.home()
-            / "workspace/results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json",
+            / "workspace/results/proper_kd/medium_kd_h192_l2/official_student_kd_report.json",
         ]
     )
     for path in candidates:

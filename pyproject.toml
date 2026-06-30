@@ -35,6 +35,7 @@ demo = [
   "python-multipart>=0.0.9",
   "imageio>=2.34",
   "imageio-ffmpeg>=0.5",
+  "open_clip_torch>=2.24",
 ]
 
 [tool.setuptools.packages.find]

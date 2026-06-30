@@ -130,11 +130,17 @@ def engagement_band(
 
 @torch.no_grad()
 def run_student(model: torch.nn.Module, batch: dict[str, object]) -> dict[str, torch.Tensor]:
+    kwargs: dict[str, torch.Tensor] = {}
+    for batch_key, model_key in (("dover_inputs", "dover_inputs"), ("quality_inputs", "quality_inputs")):
+        value = batch.get(batch_key)
+        if isinstance(value, torch.Tensor) and value.numel() > 0:
+            kwargs[model_key] = value
     return model(
         batch["clip_inputs"],
         batch["clip_mask"],
         batch["text_inputs"],
         batch["text_mask"],
+        **kwargs,
     )
 
 

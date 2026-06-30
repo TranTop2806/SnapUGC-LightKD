@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import math
 import os
@@ -22,6 +23,7 @@ from snapugc_lightkd.explanations import (  # noqa: E402
     engagement_band,
     explain_student_prediction,
     move_batch,
+    run_student,
 )
 from snapugc_lightkd.llm_explainer import (  # noqa: E402
     build_semantic_llm_input,
@@ -38,15 +40,22 @@ from snapugc_lightkd.student_native import (  # noqa: E402
 )
 
 
-def load_checkpoint(model: torch.nn.Module, checkpoint: Path, device: torch.device) -> bool:
+def load_checkpoint(model: torch.nn.Module, checkpoint: Path, device: torch.device) -> None:
     if not checkpoint.exists():
-        return False
+        raise FileNotFoundError(f"Student checkpoint not found: {checkpoint}")
     try:
         state = torch.load(checkpoint, map_location=device, weights_only=True)
     except TypeError:
         state = torch.load(checkpoint, map_location=device)
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    return len(unexpected) == 0 and len(missing) == 0
+    model.load_state_dict(state, strict=True)
+
+
+def supported_model_kwargs(raw: dict) -> tuple[dict, list[str]]:
+    valid = set(inspect.signature(OfficialArtifactStudent.__init__).parameters) - {"self"}
+    return (
+        {key: value for key, value in raw.items() if key in valid},
+        sorted(set(raw) - valid),
+    )
 
 
 def load_report(path: Path | None) -> dict:
@@ -92,8 +101,18 @@ def main() -> None:
 
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
     report_path = resolve_report_path(args.report_json)
+    if report_path is None or not report_path.exists():
+        raise FileNotFoundError(
+            "No Proper KD report found. Pass --report-json or set SNAPUGC_REPORT_JSON."
+        )
     report = load_report(report_path)
-    model_kwargs = dict(
+    input_preset = str(report.get("input_preset", ""))
+    if input_preset != "clip_mobilenet_text":
+        raise ValueError(
+            "New-video E2E inference requires a clip_mobilenet_text Proper KD checkpoint; "
+            f"got input_preset={input_preset!r}."
+        )
+    raw_model_kwargs = dict(
         report.get(
             "model_kwargs",
             {
@@ -106,6 +125,7 @@ def main() -> None:
             },
         )
     )
+    model_kwargs, ignored_model_kwargs = supported_model_kwargs(raw_model_kwargs)
     max_clips = int(args.max_clips or model_kwargs.get("max_clips", 16))
     model_kwargs["max_clips"] = max_clips
 
@@ -118,27 +138,25 @@ def main() -> None:
         device=device,
         efficientnet_weights=args.efficientnet_weights,
         no_visual_encoder=args.no_visual_encoder,
+        input_preset=input_preset,
     )
     batch = move_batch(native.as_batch(), device)
 
     model = OfficialArtifactStudent(**model_kwargs).to(device)
     ckpt_path = resolve_checkpoint_path(args.checkpoint, report_path)
-    checkpoint_loaded = load_checkpoint(model, ckpt_path, device) if ckpt_path else False
+    if ckpt_path is None:
+        raise FileNotFoundError(
+            "No student checkpoint found. Pass --checkpoint or set SNAPUGC_STUDENT_CHECKPOINT."
+        )
+    load_checkpoint(model, ckpt_path, device)
     model.eval()
     with torch.no_grad():
-        outputs = model(
-            batch["clip_inputs"],
-            batch["clip_mask"],
-            batch["text_inputs"],
-            batch["text_mask"],
-        )
+        outputs = run_student(model, batch)
 
     raw_student_score = float(outputs["predicted_ecr"][0].detach().cpu().item())
-    # Native features are intentionally teacher-free and may not match the exact
-    # teacher-artifact distribution used in KD. Blend with an interpretable
-    # native heuristic so demos remain stable while still reporting both values.
-    student_ecr = 0.72 * raw_student_score + 0.28 * native.heuristic_score
-    outputs["predicted_ecr"] = torch.tensor([student_ecr], device=device, dtype=torch.float32)
+    # Keep prediction and all ablations on exactly the same model function.
+    # The hand-written heuristic remains diagnostic-only.
+    student_ecr = raw_student_score
 
     input_config = make_input_config(native.text_streams)
     reference_values = load_reference_ecr_values(args.labels_csv)
@@ -246,10 +264,14 @@ def main() -> None:
         "video_path": str(Path(args.video).resolve()),
         "report_json": str(report_path) if report_path else None,
         "checkpoint": str(ckpt_path) if ckpt_path else None,
-        "checkpoint_loaded": checkpoint_loaded,
+        "checkpoint_loaded": True,
+        "input_preset": input_preset,
+        "ignored_legacy_model_kwargs": ignored_model_kwargs,
         "input_distribution_note": (
-            "Native EfficientNet/low-level features are fed to the compact student. "
-            "Teacher artifacts remain training/offline supervision only."
+            "Raw frames use the Proper KD CLIP ViT-B/32 + MobileNetV3-Small feature "
+            "definitions. Title/description use Stable Diffusion v1.4 CLIP text pooling; "
+            "the sound stream is explicitly empty because this demo has no audio labeler. "
+            "Teacher artifacts remain training-only supervision."
         ),
     }
 
@@ -317,7 +339,7 @@ def build_student_claims(result: dict) -> list[str]:
 
 def make_input_config(streams: list[str]) -> SimpleNamespace:
     return SimpleNamespace(
-        use_sound_text=False,
+        use_sound_text="sound" in streams,
         use_title_text="title" in streams or "empty_metadata" in streams,
         use_description_text="description" in streams,
         use_caption_text=False,
@@ -346,8 +368,8 @@ def resolve_report_path(raw: str | None) -> Path | None:
     candidates.extend(
         [
             Path.home()
-            / "workspace/results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json",
-            ROOT / "results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json",
+            / "workspace/results/proper_kd/medium_kd_h192_l2/official_student_kd_report.json",
+            ROOT / "results/proper_kd/medium_kd_h192_l2/official_student_kd_report.json",
         ]
     )
     for path in candidates:
