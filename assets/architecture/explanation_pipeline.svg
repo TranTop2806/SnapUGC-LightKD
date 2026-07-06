@@ -1,0 +1,175 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1130px" height="1120px" viewBox="0 0 1130 1120" role="img" aria-labelledby="title desc">
+  <title id="title">SnapUGC LightKD Explanation Pipeline</title>
+  <desc id="desc">Draw.io-style architecture diagram for the student-only SnapUGC LightKD explanation pipeline.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#36393d"/>
+    </marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6666ff"/>
+    </marker>
+    <style>
+      .background { fill: #ffffff; }
+      .group { fill: #f9f7ed; stroke: #36393d; stroke-width: 2; stroke-dasharray: 6 6; }
+      .header { fill: #1ba1e2; stroke: #006eaf; stroke-width: 2; }
+      .box { stroke: #36393d; stroke-width: 2; }
+      .orange { fill: #ffcc99; }
+      .green { fill: #cdeb8b; }
+      .cyan { fill: #b1ddf0; }
+      .purple { fill: #ecebff; }
+      .white { fill: #ffffff; }
+      .line { fill: none; stroke: #36393d; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .arrow { fill: none; stroke: #36393d; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
+      .dash-arrow { fill: none; stroke: #6666ff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 6 6; marker-end: url(#arrow-purple); }
+      .title { fill: #182026; font-family: Helvetica, Arial, sans-serif; font-size: 22px; font-weight: 700; }
+      .header-text { fill: #ffffff; font-family: Helvetica, Arial, sans-serif; font-size: 13px; font-weight: 700; }
+      .box-title { fill: #182026; font-family: Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 700; }
+      .box-subtitle { fill: #34404a; font-family: Helvetica, Arial, sans-serif; font-size: 12px; }
+      .note-title { fill: #182026; font-family: Helvetica, Arial, sans-serif; font-size: 13px; font-weight: 700; }
+      .note-text { fill: #34404a; font-family: Helvetica, Arial, sans-serif; font-size: 12px; }
+      .side-label { fill: #6666ff; font-family: Helvetica, Arial, sans-serif; font-size: 12px; font-weight: 700; }
+    </style>
+  </defs>
+
+  <rect class="background" x="0" y="0" width="1130" height="1100"/>
+  <text class="title" x="55" y="42">SnapUGC LightKD Explanation Pipeline</text>
+
+  <!-- GROUP 1 -->
+  <rect class="group" x="55" y="70" width="760" height="240" rx="35" ry="35"/>
+  <rect class="header" x="80" y="94" width="205" height="28" rx="4" ry="4"/>
+  <text class="header-text" x="182.5" y="112" text-anchor="middle">FROM STUDENT INFERENCE</text>
+
+  <rect class="box orange" x="85" y="145" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="180" y="168" text-anchor="middle">Student ECR</text>
+  <text class="box-subtitle" x="180" y="187" text-anchor="middle">score + engagement band</text>
+
+  <rect class="box orange" x="315" y="145" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="410" y="162" text-anchor="middle">Model Signals</text>
+  <text class="box-subtitle" x="410" y="181" text-anchor="middle">attention, contribution deltas</text>
+  <text class="box-subtitle" x="410" y="195" text-anchor="middle">text streams</text>
+
+  <rect class="box cyan" x="545" y="145" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="640" y="162" text-anchor="middle">Native Metrics</text>
+  <text class="box-subtitle" x="640" y="181" text-anchor="middle">brightness, contrast</text>
+  <text class="box-subtitle" x="640" y="195" text-anchor="middle">sharpness, motion</text>
+
+  <rect class="box white" x="315" y="250" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="410" y="273" text-anchor="middle">Explanation Inputs</text>
+  <text class="box-subtitle" x="410" y="292" text-anchor="middle">prediction + signals + metrics</text>
+
+  <path class="line" d="M 180 199 L 180 225"/>
+  <path class="line" d="M 410 199 L 410 225"/>
+  <path class="line" d="M 640 199 L 640 225"/>
+  <path class="line" d="M 180 225 L 640 225"/>
+  <path class="arrow" d="M 410 225 L 410 250"/>
+
+  <!-- GROUP 2 -->
+  <rect class="group" x="55" y="340" width="760" height="230" rx="35" ry="35"/>
+  <rect class="header" x="80" y="364" width="205" height="28" rx="4" ry="4"/>
+  <text class="header-text" x="182.5" y="382" text-anchor="middle">EVIDENCE CONSTRUCTION</text>
+
+  <rect class="box orange" x="205" y="425" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="300" y="443" text-anchor="middle">Clip Ablation</text>
+  <text class="box-subtitle" x="300" y="461" text-anchor="middle">mask each clip</text>
+  <text class="box-subtitle" x="300" y="475" text-anchor="middle">measure ΔECR</text>
+
+  <rect class="box orange" x="455" y="425" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="550" y="443" text-anchor="middle">Text Ablation</text>
+  <text class="box-subtitle" x="550" y="461" text-anchor="middle">mask title/description</text>
+  <text class="box-subtitle" x="550" y="475" text-anchor="middle">stream</text>
+
+  <rect class="box green" x="330" y="510" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="425" y="533" text-anchor="middle">Evidence Ranking</text>
+  <text class="box-subtitle" x="425" y="552" text-anchor="middle">top clips + important text</text>
+
+  <path class="line" d="M 410 304 L 410 410"/>
+  <path class="line" d="M 300 410 L 550 410"/>
+  <path class="arrow" d="M 300 410 L 300 425"/>
+  <path class="arrow" d="M 550 410 L 550 425"/>
+  <path class="line" d="M 300 479 L 300 494"/>
+  <path class="line" d="M 550 479 L 550 494"/>
+  <path class="line" d="M 300 494 L 550 494"/>
+  <path class="arrow" d="M 425 494 L 425 510"/>
+
+  <!-- GROUP 3 -->
+  <rect class="group" x="55" y="610" width="760" height="230" rx="35" ry="35"/>
+  <rect class="header" x="80" y="634" width="205" height="28" rx="4" ry="4"/>
+  <text class="header-text" x="182.5" y="652" text-anchor="middle">SEMANTIC TRANSLATION</text>
+
+  <rect class="box cyan" x="205" y="695" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="300" y="713" text-anchor="middle">Semantic Labeling</text>
+  <text class="box-subtitle" x="300" y="731" text-anchor="middle">motion, lighting</text>
+  <text class="box-subtitle" x="300" y="745" text-anchor="middle">clarity, pacing</text>
+
+  <rect class="box cyan" x="455" y="695" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="550" y="713" text-anchor="middle">Semantic Attributes</text>
+  <text class="box-subtitle" x="550" y="731" text-anchor="middle">6 interpretable scores</text>
+  <text class="box-subtitle" x="550" y="745" text-anchor="middle">shown as %</text>
+
+  <rect class="box white" x="330" y="780" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="425" y="803" text-anchor="middle">Evidence Package</text>
+  <text class="box-subtitle" x="425" y="822" text-anchor="middle">clips + labels + attributes</text>
+
+  <path class="line" d="M 425 564 L 425 680"/>
+  <path class="line" d="M 300 680 L 550 680"/>
+  <path class="arrow" d="M 300 680 L 300 695"/>
+  <path class="arrow" d="M 550 680 L 550 695"/>
+  <path class="line" d="M 300 749 L 300 764"/>
+  <path class="line" d="M 550 749 L 550 764"/>
+  <path class="line" d="M 300 764 L 550 764"/>
+  <path class="arrow" d="M 425 764 L 425 780"/>
+
+  <!-- GROUP 4 -->
+  <rect class="group" x="55" y="860" width="760" height="160" rx="35" ry="35"/>
+  <rect class="header" x="80" y="884" width="205" height="28" rx="4" ry="4"/>
+  <text class="header-text" x="182.5" y="902" text-anchor="middle">EXPLANATION OUTPUT</text>
+
+  <rect class="box purple" x="85" y="945" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="180" y="958" text-anchor="middle">LLM / Template</text>
+  <text class="box-title" x="180" y="972" text-anchor="middle">Writer</text>
+  <text class="box-subtitle" x="180" y="986" text-anchor="middle">Vietnamese summary</text>
+  <text class="box-subtitle" x="180" y="997" text-anchor="middle">+ claims</text>
+
+  <rect class="box white" x="315" y="945" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="410" y="962" text-anchor="middle">Demo UI</text>
+  <text class="box-subtitle" x="410" y="981" text-anchor="middle">ECR, top clips, attributes</text>
+  <text class="box-subtitle" x="410" y="995" text-anchor="middle">suggestions</text>
+
+  <rect class="box green" x="545" y="945" width="190" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="640" y="962" text-anchor="middle">Editable Metadata</text>
+  <text class="box-subtitle" x="640" y="981" text-anchor="middle">suggested title</text>
+  <text class="box-subtitle" x="640" y="995" text-anchor="middle">+ description</text>
+
+  <path class="line" d="M 425 834 L 425 930"/>
+  <path class="line" d="M 180 930 L 640 930"/>
+  <path class="arrow" d="M 180 930 L 180 945"/>
+  <path class="arrow" d="M 410 930 L 410 945"/>
+  <path class="arrow" d="M 640 930 L 640 945"/>
+
+  <!-- SIDE GROUP -->
+  <rect class="group" x="835" y="835" width="245" height="205" rx="35" ry="35"/>
+  <rect class="header" x="858" y="859" width="160" height="28" rx="4" ry="4"/>
+  <text class="header-text" x="938" y="877" text-anchor="middle">AUTO-EDIT LOOP</text>
+
+  <rect class="box orange" x="870" y="915" width="170" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="955" y="932" text-anchor="middle">Feasible Video Edits</text>
+  <text class="box-subtitle" x="955" y="951" text-anchor="middle">brightness, contrast</text>
+  <text class="box-subtitle" x="955" y="965" text-anchor="middle">sharpness, saturation</text>
+
+  <rect class="box orange" x="870" y="985" width="170" height="54" rx="8" ry="8"/>
+  <text class="box-title" x="955" y="1008" text-anchor="middle">Rerun Student</text>
+  <text class="box-subtitle" x="955" y="1027" text-anchor="middle">compare new ECR</text>
+
+  <path class="arrow" d="M 955 969 L 955 985"/>
+  <text class="side-label" x="760" y="918">optional auto-edit</text>
+  <path class="dash-arrow" d="M 735 972 L 810 972 L 810 942 L 870 942"/>
+
+  <text class="side-label" x="560" y="1038">before / after comparison</text>
+  <path class="dash-arrow" d="M 955 1039 L 955 1045 L 410 1045 L 410 999"/>
+
+  <!-- BOTTOM NOTE -->
+  <rect class="box white" x="180" y="1054" width="760" height="52" rx="8" ry="8"/>
+  <text class="note-title" x="210" y="1070">Key design choice</text>
+  <text class="note-text" x="210" y="1088">No teacher call during demo inference. The writer only verbalizes structured evidence;</text>
+  <text class="note-text" x="210" y="1103">it does not invent causes outside top clips, text, metrics, and semantic labels.</text>
+</svg>

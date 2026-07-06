@@ -11,7 +11,10 @@ import json
 import os
 import urllib.error
 import urllib.request
+from functools import lru_cache
 from typing import Any
+
+DEFAULT_LOCAL_LLM_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 
 
 def build_semantic_llm_input(
@@ -23,7 +26,6 @@ def build_semantic_llm_input(
 ) -> dict[str, Any]:
     """Create a compact, grounded package for LLM explanation."""
 
-    faith = result.get("nla_style_explanation", {}).get("faithfulness", {})
     scores = result.get("scores", {})
     band = scores.get("band", {})
     top_clips = []
@@ -57,8 +59,9 @@ def build_semantic_llm_input(
         "constraints": [
             "Use only the supplied evidence.",
             "Do not invent unseen objects, events, or audience reactions.",
-            "Mention faithfulness/ablation only as model evidence, not absolute causality.",
             "Prefer clear language for a non-technical reader.",
+            "Final output must preserve: ECR prediction, why top clips/text matter, and actionable suggestions.",
+            "If multiple selected clips have similar labels, group them instead of repeating the same wording.",
         ],
         "prediction": {
             "student_ecr": scores.get("student_ecr"),
@@ -71,12 +74,6 @@ def build_semantic_llm_input(
         "top_clips": top_clips,
         "text_streams": text_streams,
         "semantic_attributes": semantic_attributes,
-        "faithfulness": {
-            "keep_only_selected_ecr": faith.get("keep_only_selected_ecr"),
-            "remove_selected_ecr": faith.get("remove_selected_ecr"),
-            "reconstruction_error_abs": faith.get("reconstruction_error_abs"),
-            "necessity_delta": faith.get("necessity_delta_student_minus_removed"),
-        },
         "recommendations": recommendations,
     }
 
@@ -90,6 +87,9 @@ def generate_semantic_explanation(
     """Generate a natural-language explanation from structured evidence.
 
     Environment variables:
+    - SNAPUGC_LLM_BACKEND: auto, local, openai, template. Default auto.
+    - SNAPUGC_LOCAL_LLM_MODEL, default Qwen/Qwen2.5-3B-Instruct.
+    - SNAPUGC_LOCAL_LLM_CACHE, optional Hugging Face cache directory.
     - SNAPUGC_LLM_API_KEY or OPENAI_API_KEY
     - SNAPUGC_LLM_BASE_URL, default https://api.openai.com/v1
     - SNAPUGC_LLM_MODEL, default gpt-4o-mini
@@ -97,6 +97,23 @@ def generate_semantic_explanation(
 
     if not enabled:
         return template_semantic_explanation(payload, language=language, fallback_reason="llm_disabled")
+
+    backend = os.environ.get("SNAPUGC_LLM_BACKEND", "auto").strip().lower()
+    if backend == "template":
+        return template_semantic_explanation(payload, language=language, fallback_reason="template_backend")
+    if backend in {"local", "transformers", "hf"}:
+        return generate_local_transformers_explanation(payload, language=language)
+    if backend == "auto" and _local_model_available():
+        local = generate_local_transformers_explanation(payload, language=language)
+        if local["llm"]["used_llm"]:
+            return local
+
+    if backend not in {"auto", "openai", "api", "remote"}:
+        return template_semantic_explanation(
+            payload,
+            language=language,
+            fallback_reason=f"unknown_backend:{backend}",
+        )
 
     api_key = os.environ.get("SNAPUGC_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -152,6 +169,64 @@ def generate_semantic_explanation(
         )
 
 
+def generate_local_transformers_explanation(
+    payload: dict[str, Any],
+    *,
+    language: str = "vi",
+) -> dict[str, Any]:
+    model_id = os.environ.get("SNAPUGC_LOCAL_LLM_MODEL", DEFAULT_LOCAL_LLM_MODEL)
+    max_new_tokens = int(os.environ.get("SNAPUGC_LOCAL_LLM_MAX_NEW_TOKENS", "420"))
+    try:
+        tokenizer, model = _load_local_transformers_model(model_id)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You write concise, grounded explanations for a student video engagement model. "
+                    "Return JSON only."
+                ),
+            },
+            {"role": "user", "content": _prompt(payload, language=language)},
+        ]
+        if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
+            prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        else:
+            prompt = "\n\n".join(f"{m['role']}: {m['content']}" for m in messages) + "\nassistant:"
+
+        import torch
+
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        generated = output[0][inputs["input_ids"].shape[-1] :]
+        content = tokenizer.decode(generated, skip_special_tokens=True)
+        parsed = _parse_json_object(content)
+        return _normalize_llm_output(
+            parsed,
+            provider="local_transformers",
+            model=model_id,
+            used_llm=True,
+            fallback_reason=None,
+        )
+    except Exception as exc:
+        return template_semantic_explanation(
+            payload,
+            language=language,
+            fallback_reason=f"local_llm_failed:{type(exc).__name__}",
+        )
+
+
 def template_semantic_explanation(
     payload: dict[str, Any],
     *,
@@ -163,7 +238,6 @@ def template_semantic_explanation(
     band = prediction.get("band_vi") or prediction.get("band") or "unknown"
     clips = payload.get("top_clips", [])
     text_rows = payload.get("text_streams", [])
-    faith = payload.get("faithfulness", {})
 
     if language.lower().startswith("en"):
         summary = f"The student predicts ECR={score:.3f}, in the {prediction.get('band', band)} range."
@@ -174,29 +248,31 @@ def template_semantic_explanation(
                 delta = _safe_float(clip.get("contribution_to_score"), default=0.0)
                 verb = "supports a higher score" if delta >= 0 else "pulls the score down"
                 bits.append(f"{clip.get('time')}: {clip.get('semantic_label')} ({verb}, delta={delta:.3f})")
-            claims.append("The main temporal evidence is: " + "; ".join(bits) + ".")
+            claims.append(_join_evidence_bits(bits, english=True))
         if text_rows and text_rows[0].get("source_text"):
             claims.append(
                 f"The strongest text evidence is {text_rows[0].get('stream')}: "
                 f"{text_rows[0].get('source_text')}"
             )
-        claims.append(_faithfulness_sentence(faith, english=True))
     else:
-        summary = f"Student dự đoán ECR={score:.3f}, thuộc nhóm {band}."
+        summary = f"Mô hình dự đoán ECR={score:.3f}, thuộc nhóm {band}."
         claims = [summary]
         if clips:
             bits = []
             for clip in clips:
                 delta = _safe_float(clip.get("contribution_to_score"), default=0.0)
-                verb = "hỗ trợ tăng score" if delta >= 0 else "kìm score"
-                bits.append(f"{clip.get('time')}: {clip.get('semantic_label')} ({verb}, delta={delta:.3f})")
-            claims.append("Evidence thời gian chính: " + "; ".join(bits) + ".")
+                verb = "hỗ trợ tăng điểm" if delta >= 0 else "kìm điểm"
+                bits.append(
+                    f"{clip.get('time')}: {clip.get('semantic_label')} "
+                    f"({verb}, mức ảnh hưởng={delta:.3f})"
+                )
+            claims.append(_join_evidence_bits(bits, english=False))
         if text_rows and text_rows[0].get("source_text"):
+            stream = _stream_label(text_rows[0].get("stream"), language="vi")
             claims.append(
-                f"Text quan trọng nhất là {text_rows[0].get('stream')}: "
-                f"{text_rows[0].get('source_text')}"
+                f"Văn bản quan trọng nhất là {stream}; tín hiệu này được dùng để bổ sung "
+                "ngữ cảnh cho dự đoán."
             )
-        claims.append(_faithfulness_sentence(faith, english=False))
 
     return _normalize_llm_output(
         {
@@ -216,13 +292,16 @@ def _prompt(payload: dict[str, Any], *, language: str) -> str:
     if language.lower().startswith("en"):
         language_instruction = "Write in English."
     else:
-        language_instruction = "Write in Vietnamese."
+        language_instruction = (
+            "Write entirely in Vietnamese. Do not use English section labels. "
+            "Translate technical labels into natural Vietnamese when possible."
+        )
     return (
         f"{language_instruction}\n"
         "Return a JSON object with keys: summary, claims, top_evidence_rationales, recommendations.\n"
         "- summary: one short paragraph for a normal user.\n"
         "- claims: 3-5 grounded bullet-like strings.\n"
-        "- top_evidence_rationales: explain why the selected clips/text streams matter.\n"
+        "- top_evidence_rationales: explain why the selected clips/text streams matter. Group similar clips.\n"
         "- recommendations: reuse or lightly rewrite supplied recommendations.\n\n"
         "Evidence JSON:\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
@@ -273,6 +352,68 @@ def _normalize_llm_output(
     }
 
 
+@lru_cache(maxsize=2)
+def _load_local_transformers_model(model_id: str) -> tuple[Any, Any]:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    cache_dir = os.environ.get("SNAPUGC_LOCAL_LLM_CACHE") or None
+    tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir)
+    kwargs: dict[str, Any] = {"cache_dir": cache_dir}
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            kwargs.update({"torch_dtype": "auto", "device_map": "auto"})
+        elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            kwargs.update({"torch_dtype": torch.float16})
+        else:
+            kwargs.update({"torch_dtype": torch.float32})
+    except Exception:
+        pass
+    model = AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
+    try:
+        import torch
+
+        if (
+            not torch.cuda.is_available()
+            and getattr(torch.backends, "mps", None) is not None
+            and torch.backends.mps.is_available()
+        ):
+            model = model.to("mps")
+    except Exception:
+        pass
+    model.eval()
+    return tokenizer, model
+
+
+def _local_model_available() -> bool:
+    model_id = os.environ.get("SNAPUGC_LOCAL_LLM_MODEL")
+    cache_dir = os.environ.get("SNAPUGC_LOCAL_LLM_CACHE")
+    if not model_id:
+        return False
+    try:
+        from transformers import AutoConfig
+
+        AutoConfig.from_pretrained(model_id, cache_dir=cache_dir, local_files_only=True)
+        return True
+    except Exception:
+        return False
+
+
+def _join_evidence_bits(bits: list[str], *, english: bool) -> str:
+    if not bits:
+        return ""
+    if len(bits) <= 2:
+        prefix = "The main temporal evidence is: " if english else "Bằng chứng thời gian chính: "
+        return prefix + "; ".join(bits) + "."
+    prefix = (
+        "The selected temporal evidence appears in several high-scoring moments: "
+        if english
+        else "Bằng chứng thời gian chính xuất hiện ở nhiều đoạn quan trọng: "
+    )
+    return prefix + "; ".join(bits[:3]) + "."
+
+
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(x).strip() for x in value if str(x).strip()]
@@ -281,17 +422,20 @@ def _string_list(value: Any) -> list[str]:
     return []
 
 
-def _faithfulness_sentence(faith: dict[str, Any], *, english: bool) -> str:
-    keep = _safe_float(faith.get("keep_only_selected_ecr"), default=float("nan"))
-    remove = _safe_float(faith.get("remove_selected_ecr"), default=float("nan"))
-    err = _safe_float(faith.get("reconstruction_error_abs"), default=float("nan"))
-    if english:
-        return f"Faithfulness check: keep-only={keep:.3f}, remove-selected={remove:.3f}, error={err:.3f}."
-    return f"Kiểm chứng faithfulness: keep-only={keep:.3f}, remove-selected={remove:.3f}, error={err:.3f}."
-
-
 def _safe_float(value: Any, *, default: float) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _stream_label(value: Any, *, language: str) -> str:
+    stream = str(value or "")
+    if language.lower().startswith("vi"):
+        return {
+            "title": "tiêu đề",
+            "description": "mô tả",
+            "caption": "caption thị giác",
+            "sound": "âm thanh",
+        }.get(stream, stream or "văn bản")
+    return stream or "text"

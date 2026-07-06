@@ -48,13 +48,6 @@
 
           <div class="controls">
             <label class="field compact">
-              <span>Device</span>
-              <select id="device" name="device">
-                <option value="cpu">CPU</option>
-                <option value="cuda">CUDA</option>
-              </select>
-            </label>
-            <label class="field compact">
               <span>Top clips</span>
               <select id="topk" name="topk">
                 <option value="3">3</option>
@@ -73,12 +66,12 @@
       <section class="workspace">
         <div class="preview-band">
           <video id="preview" controls muted playsinline hidden></video>
-          <div class="empty-preview" id="empty-preview">Video preview</div>
+          <div class="empty-preview" id="empty-preview">Xem trước video</div>
         </div>
 
         <section class="result-grid" id="result-grid" hidden>
           <article class="panel score-panel">
-            <p class="eyebrow">Engagement prediction</p>
+            <p class="eyebrow">Dự đoán ECR</p>
             <div class="score-row">
               <strong id="score">0.000</strong>
               <span id="band">medium</span>
@@ -89,48 +82,74 @@
             <p class="summary" id="summary"></p>
           </article>
 
-          <article class="panel">
-            <p class="eyebrow">Faithfulness</p>
-            <dl class="metrics">
-              <div>
-                <dt>Keep-only</dt>
-                <dd id="keep-only">-</dd>
-              </div>
-              <div>
-                <dt>Remove</dt>
-                <dd id="remove">-</dd>
-              </div>
-              <div>
-                <dt>Confidence</dt>
-                <dd id="confidence">-</dd>
-              </div>
-            </dl>
-          </article>
         </section>
 
         <section class="panel" id="clips-panel" hidden>
           <div class="section-head">
             <div>
-              <p class="eyebrow">Evidence</p>
-              <h2>Top clips</h2>
+              <p class="eyebrow">Bằng chứng</p>
+              <h2>Đoạn nổi bật</h2>
             </div>
           </div>
           <div class="clip-list" id="clip-list"></div>
         </section>
 
         <section class="panel" id="claims-panel" hidden>
-          <p class="eyebrow">Explanation</p>
+          <p class="eyebrow">Giải thích</p>
           <ul class="claims" id="claims"></ul>
         </section>
 
         <section class="panel" id="concepts-panel" hidden>
-          <p class="eyebrow">Semantic attributes</p>
+          <p class="eyebrow">Thuộc tính ngữ nghĩa</p>
           <div class="concept-grid" id="concepts"></div>
         </section>
 
         <section class="panel" id="recommendations-panel" hidden>
-          <p class="eyebrow">Actionable suggestions</p>
-          <ul class="recommendations" id="recommendations"></ul>
+          <p class="eyebrow">Gợi ý cải thiện</p>
+          <div class="recommendation-group" id="post-production-group" hidden>
+            <h3>Hậu kì và metadata có thể chỉnh ngay</h3>
+            <ul class="recommendations post-production" id="post-production-recommendations"></ul>
+          </div>
+          <div class="recommendation-group" id="content-group" hidden>
+            <h3>Cảnh quay hoặc dựng nội dung</h3>
+            <ul class="recommendations content-production" id="content-recommendations"></ul>
+          </div>
+        </section>
+
+        <section class="panel" id="auto-edit-panel" hidden>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Chỉnh sửa khả thi</p>
+              <h2>Auto edit và chạy lại</h2>
+            </div>
+            <button class="secondary" type="button" id="auto-edit-button">Chỉnh video</button>
+          </div>
+          <p class="prompt-note">
+            Hệ thống chỉnh các clip không phải top evidence bằng thao tác hậu kì khả thi, đồng thời áp dụng metadata
+            đề xuất bên dưới khi chấm lại video mới.
+          </p>
+          <div class="metadata-edit-grid">
+            <label class="field">
+              <span>Title đề xuất</span>
+              <input id="suggested-title" type="text" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Description đề xuất</span>
+              <textarea id="suggested-description" rows="3"></textarea>
+            </label>
+          </div>
+          <ul class="recommendations" id="auto-edit-plan"></ul>
+        </section>
+
+        <section class="panel" id="edited-result-panel" hidden>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">So sánh sau chỉnh sửa</p>
+              <h2>Video đã chỉnh</h2>
+            </div>
+            <span class="status-pill" id="edited-delta">Δ 0.000</span>
+          </div>
+          <div id="edited-result"></div>
         </section>
       </section>
     </main>
@@ -140,6 +159,6 @@
       <span id="toast-text">Running inference...</span>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=metadata-auto-edit-1"></script>
   </body>
 </html>
