@@ -396,12 +396,35 @@ on the 500-video locked student test.
 | Ridge Student | Pooled cached `frame_fusion` + CLIP + text | 0.3745 | 0.3829 | 0.3795 | ~274.11M (15.21%) + regressor | Not measured E2E‡ |
 | RBF-SVR Student | Pooled cached `frame_fusion` + CLIP + text | 0.5630 | 0.5556 | 0.5585 | ~274.11M (15.21%) + support vectors | Not measured E2E‡ |
 | **Full KD Student** | Cached `frame_fusion` + CLIP + text | **0.6238 ± 0.0048** | **0.6149 ± 0.0056** | **0.6185 ± 0.0053** | **~274.11M (15.21%)** | Not measured E2E‡ |
+| Proper No KD (`clip_mobilenet_text`, seed 42) | Raw-video CLIP + MobileNet; regenerated title/description text | 0.4927 | 0.4835 | 0.4871 | ~217.12M (12.05%) | Not measured E2E |
+| Proper Basic KD, teacher ECR only (`clip_mobilenet_text`, seed 42) | Raw-video CLIP + MobileNet; regenerated title/description text | 0.5524 | 0.5386 | 0.5441 | ~217.12M (12.05%) | Not measured E2E |
 | Proper / Full Pipeline KD (`clip_mobilenet_text`) | Raw-video CLIP + MobileNet; regenerated title/description text | 0.5699 | 0.5631 | 0.5658 | ~217.12M (12.05%) | ≤6.85 s measured§ |
 
 Full KD beats logit-only KD on all `5/5` paired seeds. Its paired Final gain is
 `+0.0089 ± 0.0032`, with a 95% t-interval `[+0.0050, +0.0129]`. Full KD also
 improves over the hard-label Transformer mean by `+0.0268` Final. These results
 separate the benefit of multi-loss distillation from the easier test sample.
+
+The three Proper configurations close the independent-input ablation: all use
+seed 42, the same CLIP + MobileNet input, student architecture, 4000/500/500
+split, and checkpoint-selection protocol. Proper No KD optimizes only
+`MSE(student_ecr, true_ecr)`. Proper Basic KD optimizes only
+`MSE(student_ecr, teacher_ecr)`, with no hard-label, feature, attention,
+ranking, or relation losses. Proper Full KD uses the complete objective.
+
+Teacher-ECR-only distillation raises Final from `0.4871` to `0.5441`
+(`+0.0569`), while the remaining full-KD signals add another `+0.0217`, reaching
+`0.5658`. End to end, Full KD improves PLCC by `+0.0772`, SRCC by `+0.0796`,
+and Final by `+0.0786` over No KD. This result shows that distillation remains
+effective after removing the teacher's `frame_fusion` input and separates the
+large contribution of soft teacher ECR from the additional contribution of
+feature, attention, ranking, and relation transfer. Together with the lower
+Proper Full-KD score relative to semi-independent Full KD, it supports the
+interpretation that much of the remaining gap comes from the independent
+student's weaker input representation rather than a failure of the KD
+objective. Because the Proper comparison currently has one paired seed, these
+effect sizes should not yet be reported as multi-seed means or confidence
+intervals.
 
 Sources:
 
@@ -411,6 +434,8 @@ results/final_4000_500_500_2026/full_locked_test_predictions.csv
 results/final_4000_500_500_2026/logit_locked_test_evaluation.json
 results/final_4000_500_500_2026/hard_transformer_locked_test_evaluation.json
 results/final_4000_500_500_2026/hard_mlp_locked_test_evaluation.json
+results/final_4000_500_500_2026/proper_no_kd_locked_test_evaluation.json
+results/final_4000_500_500_2026/proper_basic_kd_locked_test_evaluation.json
 results/final_4000_500_500_2026/proper_kd_locked_test_evaluation.json
 results/final_4000_500_500_2026/tabular_baselines.json
 ```
