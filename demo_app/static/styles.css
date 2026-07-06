@@ -185,7 +185,7 @@ select:focus {
 
 .controls {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 12px;
 }
 
@@ -247,7 +247,7 @@ video {
 
 .result-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
 }
 
@@ -256,7 +256,9 @@ video {
 #clips-panel,
 #claims-panel,
 #concepts-panel,
-#recommendations-panel {
+#recommendations-panel,
+#auto-edit-panel,
+#edited-result-panel {
   padding: 18px;
 }
 
@@ -293,35 +295,11 @@ video {
   line-height: 1.55;
 }
 
-.metrics {
-  margin: 0;
-  display: grid;
-  gap: 12px;
-}
-
-.metrics div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--line);
-}
-
-.metrics div:last-child {
-  padding-bottom: 0;
-  border-bottom: 0;
-}
-
-dt {
+.metric-note {
+  margin: 12px 0 0;
   color: var(--muted);
   font-size: 13px;
-  font-weight: 750;
-}
-
-dd {
-  margin: 0;
-  font-weight: 850;
+  line-height: 1.45;
 }
 
 .clip-list {
@@ -399,6 +377,141 @@ dd {
 
 .recommendations li {
   border-left-color: var(--accent-2);
+}
+
+.recommendation-group + .recommendation-group {
+  margin-top: 16px;
+}
+
+.recommendation-group h3 {
+  margin: 10px 0 0;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.post-production li {
+  border-left-color: var(--accent);
+}
+
+.content-production li {
+  border-left-color: var(--accent-2);
+}
+
+.prompt-note {
+  margin: 10px 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.edit-prompt {
+  width: 100%;
+  min-height: 360px;
+  resize: vertical;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafb;
+  color: #202a33;
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.secondary {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: #ffffff;
+  color: var(--accent-3);
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.secondary:hover {
+  background: #f3f7fb;
+}
+
+.secondary:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.delta-good {
+  color: var(--good);
+}
+
+.delta-bad {
+  color: var(--bad);
+}
+
+.comparison-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.compare-card {
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafb;
+}
+
+.compare-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.compare-card strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.compare-card.positive strong {
+  color: var(--good);
+}
+
+.compare-card.negative strong {
+  color: var(--bad);
+}
+
+.edited-video {
+  width: 100%;
+  min-height: 320px;
+  margin-top: 14px;
+  border-radius: 8px;
+  background: #151a1f;
+}
+
+.edited-score-card {
+  margin-top: 16px;
+  padding: 4px 0 2px;
+}
+
+.edited-score-card .score-row strong {
+  font-size: 58px;
+  line-height: 0.95;
+}
+
+.band-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.edited-section {
+  margin-top: 18px;
 }
 
 .concept-grid {
@@ -495,7 +608,8 @@ dd {
 
   .result-grid,
   .clip-list,
-  .concept-grid {
+  .concept-grid,
+  .comparison-grid {
     grid-template-columns: 1fr;
   }
 
