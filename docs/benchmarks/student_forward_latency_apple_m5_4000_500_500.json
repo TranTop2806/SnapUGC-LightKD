@@ -1,0 +1,113 @@
+{
+  "scope": "student forward only; cached input tensors to ECR prediction",
+  "excludes": [
+    "model and checkpoint loading",
+    "video/audio decoding",
+    "raw-input feature extraction",
+    "batch collation and host-to-device transfer"
+  ],
+  "sample_id": "5e14a1dfea4201ade02cbc5ddb31bb52",
+  "sample_index": 0,
+  "batch_size": 1,
+  "warmup": 100,
+  "repeats": 1000,
+  "device": "mps",
+  "hardware": "Apple M5, 16 GB unified memory",
+  "platform": "macOS-26.2-arm64-arm-64bit",
+  "torch_version": "2.8.0",
+  "torch_num_threads": 4,
+  "runs": [
+    {
+      "label": "Full KD",
+      "run": "results/final_4000_500_500_2026/full_seed42",
+      "checkpoint": "results/final_4000_500_500_2026/full_seed42/student_kd_best.pth",
+      "input_preset": "visual_text_sound",
+      "clip_shape": [
+        1,
+        10,
+        1024
+      ],
+      "text_shape": [
+        1,
+        3,
+        768
+      ],
+      "prediction": 0.3835523724555969,
+      "mean_ms": 2.9495885509999997,
+      "median_ms": 1.9305620000000001,
+      "p90_ms": 5.2810788,
+      "std_ms": 4.44625770184587,
+      "min_ms": 1.091875,
+      "max_ms": 109.133208
+    },
+    {
+      "label": "Logit-only KD",
+      "run": "results/final_4000_500_500_2026/logit_only_seed42",
+      "checkpoint": "results/final_4000_500_500_2026/logit_only_seed42/student_kd_best.pth",
+      "input_preset": "visual_text_sound",
+      "clip_shape": [
+        1,
+        10,
+        1024
+      ],
+      "text_shape": [
+        1,
+        3,
+        768
+      ],
+      "prediction": 0.43283817172050476,
+      "mean_ms": 1.343459613,
+      "median_ms": 1.1171250000000001,
+      "p90_ms": 1.6887042,
+      "std_ms": 0.44325356460852205,
+      "min_ms": 1.048333,
+      "max_ms": 6.420625
+    },
+    {
+      "label": "Hard-label Transformer",
+      "run": "results/final_4000_500_500_2026/hard_transformer_seed42",
+      "checkpoint": "results/final_4000_500_500_2026/hard_transformer_seed42/student_baseline_best.pth",
+      "input_preset": "visual_text_sound",
+      "clip_shape": [
+        1,
+        10,
+        1024
+      ],
+      "text_shape": [
+        1,
+        3,
+        768
+      ],
+      "prediction": 0.4590051770210266,
+      "mean_ms": 1.620975984,
+      "median_ms": 1.543333,
+      "p90_ms": 1.8009253,
+      "std_ms": 0.43601045262201427,
+      "min_ms": 1.075083,
+      "max_ms": 9.745084
+    },
+    {
+      "label": "Hard-label MLP",
+      "run": "results/final_4000_500_500_2026/hard_mlp_seed42",
+      "checkpoint": "results/final_4000_500_500_2026/hard_mlp_seed42/student_baseline_best.pth",
+      "input_preset": "visual_text_sound",
+      "clip_shape": [
+        1,
+        10,
+        1024
+      ],
+      "text_shape": [
+        1,
+        3,
+        768
+      ],
+      "prediction": 0.49901583790779114,
+      "mean_ms": 0.950957591,
+      "median_ms": 0.8485,
+      "p90_ms": 1.1753211000000001,
+      "std_ms": 0.22518099067889305,
+      "min_ms": 0.797917,
+      "max_ms": 5.017959
+    }
+  ]
+}

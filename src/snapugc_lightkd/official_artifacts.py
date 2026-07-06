@@ -423,6 +423,32 @@ def split_rows(
     return train_rows, val_rows
 
 
+def read_id_file(path: str | Path) -> set[str]:
+    """Read one video ID per line, ignoring blank lines and comments."""
+    with Path(path).open(encoding="utf-8") as handle:
+        return {
+            line.strip()
+            for line in handle
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+
+
+def select_rows_by_ids(
+    rows: list[dict[str, object]],
+    ids: set[str],
+    *,
+    split_name: str,
+) -> list[dict[str, object]]:
+    """Select rows in artifact order and fail if an explicit split is incomplete."""
+    selected = [row for row in rows if str(row["Id"]) in ids]
+    found = {str(row["Id"]) for row in selected}
+    missing = ids - found
+    if missing:
+        preview = ", ".join(sorted(missing)[:5])
+        raise ValueError(f"{split_name} contains {len(missing)} unknown IDs: {preview}")
+    return selected
+
+
 def collate_student_batch(batch: Iterable[dict[str, object]]) -> dict[str, object]:
     items = list(batch)
     batch_size = len(items)

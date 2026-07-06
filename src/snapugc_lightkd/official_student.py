@@ -7,7 +7,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-
 def drop_path(x: torch.Tensor, drop_prob: float = 0.0, training: bool = False) -> torch.Tensor:
     if drop_prob == 0. or not training:
         return x
@@ -225,7 +224,7 @@ class OfficialArtifactStudent(nn.Module):
                 ]
             )
             self.temporal_encoder = None
-        else:
+        elif n_layers > 0:
             self.temporal_layer = None
             self.temporal_layers = None
             layer = nn.TransformerEncoderLayer(
@@ -238,6 +237,10 @@ class OfficialArtifactStudent(nn.Module):
                 norm_first=True,
             )
             self.temporal_encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+        else:
+            self.temporal_layer = None
+            self.temporal_layers = None
+            self.temporal_encoder = None
         self.temporal_pool = AttentionPool(hidden_dim, dropout)
         self.local_pool = None
         self.global_pool = None
@@ -394,7 +397,7 @@ class OfficialArtifactStudent(nn.Module):
                     clip_hidden,
                     src_key_padding_mask=~clip_mask.bool(),
                 )
-        else:
+        elif self.temporal_encoder is not None:
             clip_hidden = self.temporal_encoder(
                 clip_hidden,
                 src_key_padding_mask=~clip_mask.bool(),

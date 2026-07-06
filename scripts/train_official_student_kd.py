@@ -27,6 +27,8 @@ from snapugc_lightkd.official_artifacts import (  # noqa: E402
     artifact_keys_for_input_config,
     collate_student_batch,
     load_official_artifact_rows,
+    read_id_file,
+    select_rows_by_ids,
     split_rows,
 )
 from snapugc_lightkd.official_student import OfficialArtifactStudent, compute_losses  # noqa: E402
@@ -490,6 +492,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--split-seed", type=int)
+    parser.add_argument("--train-ids", help="Explicit training IDs, one per line.")
+    parser.add_argument("--val-ids", help="Explicit model-selection IDs, one per line.")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--run-kind", choices=("baseline", "kd", "both"), default="kd")
     parser.add_argument("--init-checkpoint")
@@ -593,7 +597,18 @@ def main() -> None:
         lite_action_dim,
     )
     n_pseudo_labels = attach_pseudo_labels(rows, args.pseudo_labels, args.pseudo_label_column)
-    train_rows, val_rows = split_rows(rows, val_ratio=args.val_ratio, seed=split_seed)
+    if bool(args.train_ids) != bool(args.val_ids):
+        raise ValueError("--train-ids and --val-ids must be provided together")
+    if args.train_ids:
+        train_ids = read_id_file(args.train_ids)
+        val_ids = read_id_file(args.val_ids)
+        overlap = train_ids & val_ids
+        if overlap:
+            raise ValueError(f"Explicit train/val splits overlap on {len(overlap)} IDs")
+        train_rows = select_rows_by_ids(rows, train_ids, split_name="train split")
+        val_rows = select_rows_by_ids(rows, val_ids, split_name="validation split")
+    else:
+        train_rows, val_rows = split_rows(rows, val_ratio=args.val_ratio, seed=split_seed)
     train_dataset = OfficialTeacherArtifactDataset(
         train_rows,
         input_config,
@@ -777,6 +792,8 @@ def main() -> None:
         "n_val": len(val_rows),
         "seed": args.seed,
         "split_seed": split_seed,
+        "train_ids": str(Path(args.train_ids).resolve()) if args.train_ids else None,
+        "val_ids": str(Path(args.val_ids).resolve()) if args.val_ids else None,
         "model_kwargs": model_kwargs,
         "repr_loss": args.repr_loss,
         "rank_temperature": args.rank_temperature,

@@ -49,28 +49,27 @@ The zip archive below contains the 5000 videos, labels, and fixed split files:
 data/official_snapugc_5k_locked_dataset.zip
 ```
 
-Student experiments use a deterministic `4000/1000` split:
+The final student protocol uses a deterministic `4000/500/500` split:
 
 ```text
-seed = 42
-val_ratio = 0.2
-rows = official teacher artifact rows sorted by order_idx
-test/val = first 1000 indices after np.random.default_rng(42).shuffle(...)
-train = remaining 4000 rows
+split seed = 20260706
+train = 4000 videos
+validation = 500 videos for checkpoint selection
+locked student test = 500 videos for final reporting
 ```
 
 Split files:
 
 ```text
-data/official_5k_split/train_4000.csv
-data/official_5k_split/test_1000.csv
-data/official_5k_split/split_all_5000.csv
-data/official_5k_split/manifest.json
+data/official_5k_split_4000_500_500/train_ids.txt
+data/official_5k_split_4000_500_500/val_ids.txt
+data/official_5k_split_4000_500_500/test_ids.txt
+data/official_5k_split_4000_500_500/manifest.json
 ```
 
-In the code, the 1000 held-out rows are named `val` because they are used for
-model selection. In thesis writing, call them a fixed validation/test split and
-state the split protocol clearly.
+Teacher artifacts were precomputed independently for all 5000 videos. The
+locked test is held out only from student training and model selection; it is
+not teacher-held-out or cross-domain.
 
 ### Dataset Visualizations
 
@@ -382,43 +381,50 @@ See [student_kd_architecture.md](./docs/student_kd_architecture.md) for more det
 
 ## Experimental Results
 
+### Final 4000/500/500 protocol
 
-| Model | Evaluated inputs | PLCC | SRCC | Final Score | Student module (checkpoint / ECR path) | Raw-input E2E params* | Teacher size | Student forward latency‡ | E2E latency |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Teacher (Upper Bound)** | Raw video + title + description | 0.7103 | 0.6995 | **0.7038** | N/A | ~1,801.70M | 100% | N/A | ~10.0s† |
-| Baseline Student (No KD) | Cached frame-fusion + CLIP + text features | 0.5629 | 0.5569 | 0.5593 | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | 2.15 ms (p90 2.36 ms) | Not measured |
-| Student KD basic | Cached frame-fusion + CLIP + text features | 0.6277 | 0.6193 | 0.6227 | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | 1.84 ms (p90 2.29 ms) | Not measured |
-| Student KD full | Cached frame-fusion + CLIP + text features | 0.6304 | 0.6252 | **0.6273** | 0.433M / 0.379M | ~274.11M | 15.21% (6.57x smaller) | 2.14 ms (p90 4.06 ms) | Not measured |
-| **Proper / Full Pipeline KD** (`clip_mobilenet_text`) | Raw-video CLIP + MobileNet; cached text features | 0.5798 | 0.5743 | 0.5765 | 1.821M / 1.530M | ~217.12M | 12.05% (8.30x smaller) | 2.70 ms (p90 3.49 ms) | Not measured |
+Five Full-KD runs use the same explicit split IDs and training seeds 42–46.
+Checkpoints are selected only on the 500-video validation set and then evaluated
+on the 500-video locked student test.
 
-\*`Raw-input E2E params` counts every neural module required to reproduce the evaluated inputs from raw video/audio/title/description, while pruning outputs that are unused by the ECR path. Tokenizers, video/audio decoding, and other parameter-free preprocessing are excluded. These are architecture-derived counts; only the student checkpoint counts come directly from saved state dictionaries.
+| Model | Evaluated inputs | PLCC | SRCC | Final Score | Raw-input E2E params* (% teacher) | E2E latency / video |
+| :--- | :--- | ---: | ---: | ---: | ---: | :--- |
+| EVQA teacher reference | Raw video + title + description | 0.6958 | 0.6854 | **0.6895** | ~1,801.70M (100%) | ~34.6 s observed† |
+| Baseline Student, no KD (Transformer) | Cached `frame_fusion` + CLIP + text | 0.5925 ± 0.0069 | 0.5911 ± 0.0054 | 0.5917 ± 0.0040 | ~274.11M (15.21%) | Not measured E2E‡ |
+| Basic KD Student (logit-only) | Cached `frame_fusion` + CLIP + text | 0.6140 ± 0.0015 | 0.6066 ± 0.0032 | 0.6095 ± 0.0025 | ~274.11M (15.21%) | Not measured E2E‡ |
+| MLP Student, no KD | Pooled cached `frame_fusion` + CLIP + text | 0.5856 ± 0.0042 | 0.5844 ± 0.0083 | 0.5849 ± 0.0059 | ~274.00M (15.21%) | Not measured E2E‡ |
+| Ridge Student | Pooled cached `frame_fusion` + CLIP + text | 0.3745 | 0.3829 | 0.3795 | ~274.11M (15.21%) + regressor | Not measured E2E‡ |
+| RBF-SVR Student | Pooled cached `frame_fusion` + CLIP + text | 0.5630 | 0.5556 | 0.5585 | ~274.11M (15.21%) + support vectors | Not measured E2E‡ |
+| **Full KD Student** | Cached `frame_fusion` + CLIP + text | **0.6238 ± 0.0048** | **0.6149 ± 0.0056** | **0.6185 ± 0.0053** | **~274.11M (15.21%)** | Not measured E2E‡ |
+| Proper / Full Pipeline KD (`clip_mobilenet_text`) | Raw-video CLIP + MobileNet; regenerated title/description text | 0.5699 | 0.5631 | 0.5658 | ~217.12M (12.05%) | ≤6.85 s measured§ |
 
-| Raw-input pipeline component | Semi-independent students | Proper KD |
-| :--- | ---: | ---: |
-| EfficientNetV2-S feature path | 19,847,248 | — |
-| UVQ Distortion feature path | 29,842,563 | — |
-| EVQA frame-fusion layers | 9,380,352 | — |
-| CLIP ViT-B/32 visual tower | 87,849,216 | 87,849,216 |
-| MobileNetV3-Small feature path | — | 927,008 |
-| Stable Diffusion v1.x CLIP text encoder | 123,060,480 | 123,060,480 |
-| YAMNet sound classifier | 3,751,369 | 3,751,369 |
-| Deployed student ECR path | 378,723 | 1,530,435 |
-| **Total** | **274,109,951** | **217,118,508** |
+Full KD beats logit-only KD on all `5/5` paired seeds. Its paired Final gain is
+`+0.0089 ± 0.0032`, with a 95% t-interval `[+0.0050, +0.0129]`. Full KD also
+improves over the hard-label Transformer mean by `+0.0268` Final. These results
+separate the benefit of multi-loss distillation from the easier test sample.
 
-The three semi-independent checkpoints instantiate the same `hidden_dim=96`, one-layer student. Full KD changes the objective rather than the backbone: score, ranking, relation, attention, and representation losses add no learned parameters. Their checkpoints contain 433,092 parameters, including the training-only `clip_ecr_head` (4,705) and `hidden_to_teacher` (49,664); pruning both leaves the 378,723-parameter ECR path. Proper KD follows the same accounting: 1,530,435 ECR-path parameters + 18,625 in `clip_ecr_head` + 272,000 in `hidden_to_teacher` = 1,821,060 checkpoint parameters.
+Sources:
 
-†The teacher latency/VRAM figures are estimates reported for an NVIDIA L4 environment. Previous student timing estimates measured only selected feature-extraction components on Apple M-series hardware and excluded the complete text/audio path, so they are not presented as fair end-to-end latency results. A publication-quality speed comparison must benchmark all pipelines from the same raw inputs on the same device, batch size, frame count, precision, and warm-up protocol.
-
-‡Student forward latency is a measured batch-1, single-video model latency, not raw-input end-to-end latency. The benchmark used video `5e14a1dfea4201ade02cbc5ddb31bb52`, Apple M2 (8-core GPU) through PyTorch MPS, 100 warm-up iterations, and 1,000 synchronized timed iterations. It includes only the forward pass from already prepared cached tensors to the ECR prediction; model loading, decoding, feature extraction, collation, and host-to-device transfer are excluded. Median is reported first, with p90 in parentheses. The three semi-independent students have the same inference architecture, so their small differences are runtime noise rather than a KD compute cost. Full measurements and tensor shapes are stored in [`docs/benchmarks/student_forward_latency_apple_m2.json`](./docs/benchmarks/student_forward_latency_apple_m2.json) and can be reproduced with:
-
-```bash
-python3 scripts/benchmark_student_latency.py \
-  --device mps \
-  --hardware-label "Apple M2 (8-core GPU)" \
-  --warmup 100 \
-  --repeats 1000 \
-  --out docs/benchmarks/student_forward_latency_apple_m2.json
+```text
+results/final_4000_500_500_2026/full_locked_test_evaluation.json
+results/final_4000_500_500_2026/full_locked_test_predictions.csv
+results/final_4000_500_500_2026/logit_locked_test_evaluation.json
+results/final_4000_500_500_2026/hard_transformer_locked_test_evaluation.json
+results/final_4000_500_500_2026/hard_mlp_locked_test_evaluation.json
+results/final_4000_500_500_2026/proper_kd_locked_test_evaluation.json
+results/final_4000_500_500_2026/tabular_baselines.json
 ```
+
+\*Counts include pretrained neural feature extractors required to recreate the evaluated inputs; decoding/tokenization is excluded. Classical estimator state is listed separately because support vectors are not neural parameters.
+
+†Observed wall-clock throughput from the historical 5,000-video L4 teacher run, including artifact export; not a controlled same-hardware benchmark.
+
+‡Only cached-input forward latency has been measured for these models (Full KD median `1.931 ms` on Apple M5). A raw-video E2E value is intentionally not inferred because producing `frame_fusion` requires the teacher frontend.
+
+§A real cold raw-video Proper-KD run took `6.85 s`, but also generated counterfactual explanations and thumbnails. Therefore `6.85 s` is an upper bound on prediction-only inference, not a pure latency measurement.
+
+The cached-input latency benchmark for the four neural student heads is stored
+in `docs/benchmarks/student_forward_latency_apple_m5_4000_500_500.json`.
 
 ### KD Efficiency Reporting Convention
 

@@ -21,9 +21,10 @@ sys.path.insert(0, str(ROOT / "src"))
 from snapugc_lightkd.official_artifacts import (  # noqa: E402
     OfficialTeacherArtifactDataset,
     StudentInputConfig,
-    artifact_keys_for_input_config,
     collate_student_batch,
     load_official_artifact_rows,
+    read_id_file,
+    select_rows_by_ids,
     split_rows,
 )
 from snapugc_lightkd.official_student import OfficialArtifactStudent  # noqa: E402
@@ -269,6 +270,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all-rows", action="store_true")
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--split-seed", type=int, default=42)
+    parser.add_argument("--eval-ids", help="Explicit held-out IDs, one per line.")
     parser.add_argument("--batch", type=int, default=128)
     parser.add_argument("--clip-offsets", nargs="+", type=int, default=[0])
     parser.add_argument("--device", default="cpu")
@@ -283,7 +285,13 @@ def main() -> None:
         args.labels_csv,
     )
     eval_rows = rows
-    if not args.all_rows:
+    if args.eval_ids:
+        eval_rows = select_rows_by_ids(
+            rows,
+            read_id_file(args.eval_ids),
+            split_name="evaluation split",
+        )
+    elif not args.all_rows:
         _, eval_rows = split_rows(rows, val_ratio=args.val_ratio, seed=args.split_seed)
     device = torch.device(args.device)
 
@@ -336,6 +344,7 @@ def main() -> None:
         "artifact_dir": str(Path(args.artifact_dir).resolve()),
         "labels_csv": str(Path(args.labels_csv).resolve()),
         "split_seed": args.split_seed,
+        "eval_ids": str(Path(args.eval_ids).resolve()) if args.eval_ids else None,
         "all_rows": args.all_rows,
         "n_eval": len(eval_rows),
         "clip_offsets": args.clip_offsets,

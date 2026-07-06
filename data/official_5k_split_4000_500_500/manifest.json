@@ -1,0 +1,9 @@
+{
+  "seed": 20260706,
+  "source_labels": "/Users/top/Documents/HCMUS/KhoaLuan/SnapUGC-LightKD/data/train_subset_balanced_5000.csv",
+  "n_train": 4000,
+  "n_val": 500,
+  "n_test": 500,
+  "scope": "Internal student split; teacher artifacts were precomputed for all 5000 videos.",
+  "limitation": "Not teacher-held-out; the released teacher was trained on the source pool."
+}
