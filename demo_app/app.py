@@ -290,6 +290,8 @@ def resolve_report_path() -> Path | None:
         candidates.append(Path(raw).expanduser())
     candidates.extend(
         [
+            ROOT
+            / "results/final_4000_500_500_2026/proper_kd_seed42/official_student_kd_report.json",
             ROOT / "results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json",
             Path.home()
             / "workspace/results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json",

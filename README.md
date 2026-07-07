@@ -154,6 +154,16 @@ For the demo UI:
 pip install -r requirements-demo.txt
 ```
 
+Run the lightweight regression and smoke suite after changing the teacher,
+artifact format, student model, or demo wiring:
+
+```bash
+pip install -e '.[dev]'
+pytest -q
+python -m uvicorn demo_app.app:app --host 127.0.0.1 --port 7860
+curl http://127.0.0.1:7860/health
+```
+
 Optional notebook dependencies:
 
 ```bash

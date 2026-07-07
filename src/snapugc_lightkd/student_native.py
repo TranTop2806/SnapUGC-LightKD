@@ -21,7 +21,6 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-
 TEXT_DIM = 768
 CLIP_DIM = 1024
 

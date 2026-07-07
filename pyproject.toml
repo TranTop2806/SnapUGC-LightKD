@@ -29,14 +29,19 @@ extraction = [
 ]
 notebook = ["jupyter", "matplotlib"]
 analysis = ["scikit-learn>=1.3"]
-dev = ["ruff>=0.8.0"]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.8.0",
+]
 demo = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "python-multipart>=0.0.9",
   "imageio>=2.34",
   "imageio-ffmpeg>=0.5",
+  "opencv-python>=4.8,<4.12",
   "open_clip_torch>=2.24",
+  "soxr>=0.3.7",
 ]
 
 [tool.setuptools.packages.find]
@@ -62,3 +67,7 @@ select = [
 ignore = [
   "E501",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

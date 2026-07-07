@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-import sys
 import json
-import torch
-import numpy as np
+import sys
 from pathlib import Path
+
+import torch
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from snapugc_lightkd.official_artifacts import (
+from train_official_student_kd import (  # noqa: E402
+    attach_lite_action,
+    attach_quality_features,
+    evaluate,
+)
+
+from snapugc_lightkd.official_artifacts import (  # noqa: E402
     OfficialTeacherArtifactDataset,
     StudentInputConfig,
     artifact_keys_for_input_config,
@@ -18,15 +24,7 @@ from snapugc_lightkd.official_artifacts import (
     load_official_artifact_rows,
     split_rows,
 )
-from snapugc_lightkd.official_student import OfficialArtifactStudent
-from train_official_student_kd import (
-    attach_quality_features,
-    attach_dover_features,
-    attach_lite_action,
-    attach_pseudo_labels,
-    evaluate,
-    metrics_from_arrays,
-)
+from snapugc_lightkd.official_student import OfficialArtifactStudent  # noqa: E402
 
 
 def main():

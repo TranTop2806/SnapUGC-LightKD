@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 import sys
-import json
-import torch
-import numpy as np
-from pathlib import Path
 from itertools import combinations
+from pathlib import Path
+
+import numpy as np
+import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from snapugc_lightkd.official_artifacts import (
+from evaluate_student_ensemble import (  # noqa: E402
+    load_run,
+    metrics_from_arrays,
+    predict_one,
+)
+
+from snapugc_lightkd.official_artifacts import (  # noqa: E402
     load_official_artifact_rows,
     split_rows,
 )
-from evaluate_student_ensemble import (
-    load_run,
-    predict_one,
-    metrics_from_arrays,
-)
+
 
 def main():
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")

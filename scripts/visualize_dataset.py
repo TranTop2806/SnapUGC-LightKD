@@ -10,20 +10,18 @@ Figures:
   4. ecr_quality_bands.png    – Per-band distribution detail
 """
 
-import os
-import random
 import warnings
 from pathlib import Path
 
+import matplotlib
 import numpy as np
 import pandas as pd
-import matplotlib
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import matplotlib.gridspec as gridspec
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-from matplotlib.lines import Line2D
 
 try:
     import cv2
@@ -113,8 +111,10 @@ def load_data():
 
 
 def ecr_band(ecr):
-    if ecr < 0.33:  return "Low"
-    if ecr < 0.67:  return "Medium"
+    if ecr < 0.33:
+        return "Low"
+    if ecr < 0.67:
+        return "Medium"
     return "High"
 
 
@@ -147,8 +147,6 @@ def plot_sample_grid(all_df, n_cols=7, n_rows=2, seed=42):
     print("  [1/4] Generating sample grid …")
 
     n = n_cols * n_rows          # 12
-    rng = random.Random(seed)
-
     # Pick 12 random samples (simple random, no ECR stratification needed)
     sampled = all_df.sample(n, random_state=seed).reset_index(drop=True)
     rows = [sampled.iloc[i] for i in range(n)]

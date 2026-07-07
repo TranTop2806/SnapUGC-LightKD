@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from snapugc_lightkd.subset import make_ecr_balanced_subset
+from snapugc_lightkd.subset import make_ecr_balanced_subset  # noqa: E402
 
 
 def main() -> None:

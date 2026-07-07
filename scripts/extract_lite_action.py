@@ -6,9 +6,10 @@ Mô phỏng thông tin chuyển động (motion) cực nhẹ cho thiết bị di
 
 import argparse
 import io
-import time
 import tarfile
+import time
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import torch
@@ -16,7 +17,7 @@ import torchvision.transforms as T
 from PIL import Image
 
 try:
-    from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
+    from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
     HAS_WEIGHTS_API = True
 except ImportError:
     from torchvision.models import mobilenet_v3_small
@@ -185,7 +186,7 @@ def main():
 
                 results[video_id] = padded
                 n_ok += 1
-            except Exception as e:
+            except Exception:
                 results[video_id] = np.zeros((args.n_frames, 1152), dtype=np.float32)
                 n_fail += 1
 
@@ -247,7 +248,7 @@ def main():
 
                     results[video_id] = padded
                     n_ok += 1
-                except Exception as e:
+                except Exception:
                     results[video_id] = np.zeros((args.n_frames, 1152), dtype=np.float32)
                     n_fail += 1
 

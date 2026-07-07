@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import argparse
 import io
-import json
-import sys
 import tarfile
 import time
 from pathlib import Path
@@ -221,7 +219,7 @@ def main() -> None:
                 mask[:n] = True
                 results[video_id] = (padded, mask)
                 n_ok += 1
-            except Exception as e:
+            except Exception:
                 results[video_id] = zero_entry()
                 n_fail += 1
 
@@ -297,7 +295,7 @@ def main() -> None:
                 mask[:n] = True
                 results[video_id] = (padded, mask)
                 n_ok += 1
-            except Exception as e:
+            except Exception:
                 results[video_id] = zero_entry()
                 n_fail += 1
 
