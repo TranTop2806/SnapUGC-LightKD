@@ -1,145 +1,113 @@
 # SnapUGC-LightKD
 
-Graduation-thesis code for building a lightweight knowledge-distilled model to
-predict and explain social-video engagement. The project uses the released
-SnapUGC EVQA model as a heavyweight teacher, trains a compact student on a fixed
-5000-video subset, and adds an NLA-inspired semantic explanation layer for
-predictions.
+Thesis code for a bounded 5000-video SnapUGC knowledge-distillation study.
 
-## What This Project Does
+The current main experiment uses the authors' released SnapUGC EVQA teacher
+from `dasongli1/SnapUGC_Engagement` on one fixed, balanced 5000-video subset.
+Local code prepares the subset, runs/monitors the official teacher on GCloud,
+exports teacher artifacts for KD, and keeps student/baseline experiments
+separate from the teacher reproduction.
 
-The thesis objective is:
-
-```text
-Build a distilled student model that predicts video engagement and explains why
-the video is expected to be low/medium/high engagement.
-```
-
-There are two separate phases:
+## Current Pipeline
 
 ```text
-1. Offline training / distillation
-   Raw SnapUGC videos
-     -> official SnapUGC EVQA teacher
-     -> teacher predictions + hidden states + attention/artifacts
-     -> compact student KD training
-
-2. Inference / demo
-   New video + title + description
-     -> student-only feature extraction
-     -> compact student prediction
-     -> ablation/attention evidence
-     -> semantic labeling
-     -> optional LLM explanation + top clips + recommendations
+Balanced 5000-video subset
+  -> official SnapUGC EVQA teacher inference on GCloud L4
+     - EfficientNetV2-s semantic frame features
+     - UVQ-style distortion features
+     - ResNet3D-18 action features
+     - mPLUG-2 caption and clip features
+     - YAMNet sound labels
+     - Stable Diffusion text encoder
+     - EVQA.pth ECR head
+  -> scalar teacher ECR + hidden/attention/artifact shards
+  -> lightweight student baseline and KD experiments
 ```
 
-The important deployment constraint is that **the teacher is not required at
-new-video inference time**. Teacher artifacts are used for offline supervision
-only.
+The official teacher architecture is not reimplemented in
+`src/snapugc_lightkd/official_student.py`. A pinned local copy of the real teacher source
+lives in `third_party/SnapUGC_Engagement/ECR_inference/`. Runtime code patches
+a working copy only for compatibility/artifact export. See
+`docs/original_snapugc_exact_reproduction.md` for file-level architecture
+details, and `docs/gcp_official_inference_artifacts_readme.md` for the concrete
+Google Cloud runbook used to run official inference and export teacher artifact
+shards.
 
-## Current Status
+## Dataset And Split
 
-Completed:
-
-- Official SnapUGC EVQA teacher reproduced on a locked 5000-video subset.
-- Teacher artifact export completed for all 5000 videos.
-- Compact student baseline and KD model trained.
-- KD improves validation score over the baseline.
-- Artifact-based explanation script for already-exported videos.
-- Student-only new-video inference script.
-- Demo UI for uploading a completely new video and viewing prediction,
-  evidence, semantic labels, thumbnails, and split recommendations.
-- Deterministic auto-edit loop for feasible improvements: the demo can adjust
-  weak non-top clips with brightness/contrast/sharpness/saturation, rerun
-  student inference, and compare ECR before/after.
-- Google Cloud setup documented for both GPU training and CPU demo fallback.
-
-Current best KD run:
+The thesis uses one locked balanced 5000-video subset:
 
 ```text
-save_dir: results/kd_tuning_official_5k/v05_small_cosine_rank
-input_preset: visual_text
-repr_loss: cosine
-baseline_final: 0.5264651028399077
-kd_best_epoch: 9
-kd_final: 0.535382287857137
-kd_gain_final_score: 0.008917185017229379
+data/train_subset_balanced_5000.csv
+data/official_balanced_5000_videos/
+data/official_5k_split/
 ```
 
-Older locked-summary docs may contain earlier experimental scores. Treat the
-report JSON in the run directory as the source of truth for the latest run.
+The zip archive below contains the 5000 videos, labels, and fixed split files:
 
-## Repository Layout
+```text
+data/official_snapugc_5k_locked_dataset.zip
+```
+
+The final student protocol uses a deterministic `4000/500/500` split:
+
+```text
+split seed = 20260706
+train = 4000 videos
+validation = 500 videos for checkpoint selection
+locked student test = 500 videos for final reporting
+```
+
+Split files:
+
+```text
+data/official_5k_split_4000_500_500/train_ids.txt
+data/official_5k_split_4000_500_500/val_ids.txt
+data/official_5k_split_4000_500_500/test_ids.txt
+data/official_5k_split_4000_500_500/manifest.json
+```
+
+Teacher artifacts were precomputed independently for all 5000 videos. The
+locked test is held out only from student training and model selection; it is
+not teacher-held-out or cross-domain.
+
+### Dataset Visualizations
+
+* **Dataset Samples**: A grid of sample video frame thumbnails from the SnapUGC dataset with their corresponding ECR quality scores overlayed:
+
+  ![Dataset Samples](./assets/dataset_samples.png)
+
+* **ECR Score Distribution**: The distribution of Engagement Continuation Ratio (ECR) scores across the balanced 5000-video subset, comparing the train and validation splits:
+
+  ![ECR Distribution](./assets/ecr_distribution.png)
+
+* **Dataset Overview & Statistics**: Analysis of ECR quality band bar chart, Cumulative Distribution Function (CDF), percentile stats, and metadata counts:
+
+  ![Dataset Overview](./assets/dataset_overview.png)
+
+* **ECR Quality Bands Detail**: Per-band score distribution comparison across low, medium, and high quality regions:
+
+  ![ECR Quality Bands](./assets/ecr_quality_bands.png)
+
+## Repository Structure
 
 ```text
 SnapUGC-LightKD/
-  data/
-    official_5k_split/          # tracked split CSVs and IDs
-  demo_app/                     # FastAPI + static UI for video demo
-  docs/                         # architecture and result notes
-  notebooks/                    # original Kaggle reproduction notebook
-  references/                   # papers and challenge references
+  data/                    # local 5k subset/videos; ignored by git
+  docs/                    # reproduction notes and locked result summaries
+  notebooks/               # official Kaggle notebook kept for reproducibility
+  results/                 # generated reports/checkpoints; ignored by git
   scripts/
-    run_official_snapugc_evqa.py
-    run_gcp_official_balanced_5k_from_links.sh
-    run_gcp_full_pipeline.sh
-    resume_gcp_after_artifacts.sh
-    train_official_student_kd.py
-    infer_one_video_with_expl.py
-    infer_new_video_with_student_expl.py
-  src/snapugc_lightkd/
-    official_artifacts.py       # teacher artifact dataset utilities
-    official_student.py         # compact student model and KD losses
-    explanations.py             # NLA-inspired verbalization + ablation
-    llm_explainer.py            # semantic evidence package -> LLM/template text
-    student_native.py           # teacher-free new-video feature path
-  third_party/
-    SnapUGC_Engagement/         # pinned official teacher source
+    extract_clip_keyframe_features.py   # extract CLIP ViT-B/32 keyframe embeddings from video tar
+    train_official_student_kd.py        # student baseline and KD training
+    evaluate_student_ensemble.py        # ensemble evaluation over multiple checkpoints
+    run_official_snapugc_evqa.py        # official teacher inference wrapper
+    make_subset.py                      # create balanced 5k video subset
+  src/snapugc_lightkd/     # student artifact dataset/model helpers
+  third_party/             # pinned official teacher source, no checkpoints
 ```
 
-Generated data, videos, checkpoints, artifacts, and outputs are intentionally
-not committed.
-
-## Data And Checkpoints
-
-The locked split is tracked:
-
-```text
-data/official_5k_split/train_4000.csv
-data/official_5k_split/test_1000.csv
-data/official_5k_split/split_all_5000.csv
-data/official_5k_split/train_ids_4000.txt
-data/official_5k_split/test_ids_1000.txt
-data/official_5k_split/manifest.json
-```
-
-Large local/VM-only paths:
-
-```text
-~/workspace/snapugc-data/train_videos_balanced_5000
-~/workspace/snapugc-checkpoints
-~/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32
-~/workspace/results/kd_tuning_official_5k/v05_small_cosine_rank
-```
-
-Expected teacher/checkpoint files:
-
-```text
-EVQA.pth
-mPLUG2_MSRVTT_Caption.pth
-net_distort6_g_latest.pth
-r3d18_K_200ep.pth
-ViT-L-14.tar
-efficientnet_v2_s_21k_ft1k-dbb43f38.pth
-```
-
-On the VM these live in:
-
-```text
-~/workspace/snapugc-checkpoints
-```
-
-## Local Setup
+## Setup
 
 ```bash
 python3 -m venv .venv
@@ -148,74 +116,249 @@ pip install -U pip
 pip install -e .
 ```
 
-For the demo UI:
+On GCloud/L4, install the CUDA-compatible PyTorch wheel before running the
+official teacher wrapper.
+
+## Explain Demo
+
+The deployment demo uses the Proper KD `clip_mobilenet_text` student. For a new
+video, it extracts CLIP ViT-B/32 and MobileNetV3-Small visual features, builds
+title/description text embeddings, predicts ECR without calling the teacher,
+and converts student evidence into a reader-friendly explanation.
+
+The default report and checkpoint are:
+
+```text
+results/final_4000_500_500_2026/proper_kd_seed42/official_student_kd_report.json
+results/final_4000_500_500_2026/proper_kd_seed42/student_kd_best.pth
+```
+
+### Student-Only New-Video Explanation
+
+```bash
+python scripts/infer_new_video_with_student_expl.py \
+  --video /path/to/new_video.mp4 \
+  --title "Short, specific title" \
+  --description "Optional context" \
+  --report-json results/final_4000_500_500_2026/proper_kd_seed42/official_student_kd_report.json \
+  --checkpoint results/final_4000_500_500_2026/proper_kd_seed42/student_kd_best.pth \
+  --labels-csv data/official_5k_split/split_all_5000.csv \
+  --out-json results/demo_runs/example/result.json \
+  --assets-dir results/demo_runs/example/assets
+```
+
+The explanation flow is:
+
+```text
+student prediction
+  -> temporal attention and clip/text ablation evidence
+  -> semantic labels for important clips and metadata
+  -> optional LLM explanation or deterministic template fallback
+  -> recommendations split into feasible post-production and content changes
+```
+
+The generated report includes predicted ECR, engagement band, influential
+clips and thumbnails, text contribution, semantic attributes, a natural-language
+explanation, and actionable recommendations. Attention is presented as model
+focus, while counterfactual ablation provides the stronger faithfulness check.
+
+### Demo UI
+
+Install and start the local UI:
 
 ```bash
 pip install -r requirements-demo.txt
+
+SNAPUGC_REPORT_JSON=results/final_4000_500_500_2026/proper_kd_seed42/official_student_kd_report.json \
+SNAPUGC_STUDENT_CHECKPOINT=results/final_4000_500_500_2026/proper_kd_seed42/student_kd_best.pth \
+python3 -m uvicorn demo_app.app:app --host 127.0.0.1 --port 7860
 ```
 
-Run the lightweight regression and smoke suite after changing the teacher,
-artifact format, student model, or demo wiring:
+Open `http://127.0.0.1:7860`. The first analysis may take longer while the
+pretrained visual/text encoders are downloaded and cached. Without an LLM API
+key or local model, the demo uses a deterministic Vietnamese explanation over
+the same evidence package.
+
+Optional remote LLM configuration:
 
 ```bash
-pip install -e '.[dev]'
-pytest -q
-python -m uvicorn demo_app.app:app --host 127.0.0.1 --port 7860
-curl http://127.0.0.1:7860/health
+export SNAPUGC_LLM_BACKEND="openai"
+export SNAPUGC_LLM_API_KEY="..."
+export SNAPUGC_LLM_BASE_URL="https://api.openai.com/v1"
+export SNAPUGC_LLM_MODEL="gpt-4o-mini"
 ```
 
-Optional notebook dependencies:
+The UI also provides a deterministic `Chỉnh video` loop. It edits weak clips
+with feasible brightness, contrast, sharpness, or saturation adjustments,
+reruns student inference, and reports the before/after ECR. It does not invent
+new scenes, actions, or objects.
+
+## Model Inputs And Outputs
+
+This project has three model roles:
+
+```text
+1. Official teacher
+   Input: raw video + title + description
+   Output: teacher ECR plus artifact shards for KD
+
+2. Student baseline
+   Input: reduced teacher-extracted artifacts only
+   Output: student ECR
+   Loss: ground-truth ECR only
+
+3. Student KD
+   Input: exactly the same reduced inputs as student baseline
+   Output: student ECR plus training-only KD outputs
+   Loss: ground-truth ECR + teacher ECR/artifact/ranking distillation
+```
+
+The deployable student never sees the full privileged teacher input stack at
+inference time. The retained deployable preset is `visual_text_sound` with
+an optional CLIP semantic branch (best configuration):
+
+```text
+Student input preset: visual_text_sound
+- frame_fusion_feature: T x 1024          (EfficientNetV2-s + UVQ, from teacher artifacts)
+- YAMNet top sound labels text emb: 1 x 768
+- title pooled text embedding:     1 x 768
+- description pooled text emb:     1 x 768
+
+[Optional, deployable] CLIP ViT-B/32 keyframe embeddings:
+- quality_features: T x 512               (CLIP image encoder on 16 uniform keyframes)
+- quality_fusion: clip_add                (added into hidden space after temporal encoder)
+```
+
+Learned source/type embeddings distinguish sound labels, title, and description
+before text pooling. The `clip_add` fusion adds CLIP embeddings into the
+hidden representation after temporal encoding — acting as late semantic gating.
+
+The teacher artifacts available for KD are:
+
+```text
+teacher_ecr: scalar
+teacher_clip_ecr: T
+teacher_temporal_hidden: T x 512
+teacher_fusion_hidden: T x 512
+teacher_attention_importance: attention_layers x T
+```
+
+## Official Teacher Run
+
+The primary GCloud runner is:
 
 ```bash
-pip install -e ".[notebook]"
+SHUTDOWN_ON_EXIT=1 \
+ROOT_DIR=/workspace/SnapUGC-LightKD \
+SUBSET_CSV=/workspace/snapugc-data/train_subset_balanced_5000.csv \
+VIDEO_DIR=/workspace/snapugc-data/train_videos_balanced_5000 \
+OUT_DIR=/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32 \
+CHECKPOINT_DIR=/workspace/snapugc-checkpoints \
+EXPORT_ARTIFACTS=1 \
+ARTIFACT_SHARD_SIZE=25 \
+bash scripts/run_gcp_official_balanced_5k_from_links.sh
 ```
 
-## Model Roles
-
-### 1. Official Teacher
-
-Input:
+The run writes partial reports every 500 predictions and artifact shards every
+25 videos:
 
 ```text
-raw video + title + description
+official_partial_500_predictions.csv
+official_partial_500_report.json
+teacher_artifacts/official_teacher_artifacts_0000_0024.npz
+teacher_artifacts/official_teacher_artifacts_0000_0024_captions.jsonl
 ```
 
-Output:
+Sync outputs back to local:
+
+```bash
+PROJECT=snapugc-lightkd \
+ZONE=asia-southeast1-a \
+INSTANCE=snapugc-l4-artifacts \
+REMOTE_OUT_DIR=/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32 \
+LOCAL_OUT_DIR=results/original_snapugc_official_balanced_5000_artifacts_g2_32 \
+bash scripts/sync_gcp_official_5k_outputs.sh
+```
+
+## Architecture Overview
+
+The four diagrams below separate the end-to-end lifecycle, frozen teacher,
+semi-independent student training graph, and Proper KD deployment graph. Across
+all diagrams, blue blocks are external inputs, orange blocks are modules,
+green blocks are intermediate representations, and gray blocks are outputs.
+Solid black arrows show forward computation; blue dashed arrows show exported
+direct student features; orange dashed arrows show training-only supervision.
+
+### 1. End-to-End Teacher-Student Pipeline
+
+Offline, the frozen teacher exports direct student features and privileged KD
+targets, while ground-truth ECR supervises the student objective. The resulting
+checkpoint is then loaded by the teacher-free Proper KD student for online
+inference on a new video and its metadata.
+
+![End-to-end teacher-student pipeline](./assets/architecture/endtoend.png)
+
+### 2. Official Teacher Inference Architecture
+
+The released SnapUGC EVQA teacher combines EfficientNetV2-S semantic features,
+UVQ distortion features, ResNet3D-18 motion features, mPLUG-2 caption features,
+YAMNet sound labels, and Stable Diffusion text embeddings. Export hooks retain
+`frame_fusion_feature` and `text_pooled` as direct semi-student inputs, together
+with ECR, hidden-state, clip-level, and attention targets used only during KD.
+
+![Official SnapUGC teacher architecture](./assets/architecture/teacher.png)
+
+Teacher output files:
 
 ```text
-teacher ECR
-teacher clip ECR
-temporal hidden states
-fusion hidden states
-temporal attention
-caption/text artifacts
+official_submission_baseline.csv      # Id, ECR prediction
+official_evqa_report.json             # PLCC, SRCC, final score, MSE, MAE
+teacher_artifacts/*.npz               # hidden states, clip outputs, attention
+teacher_artifacts/*_captions.jsonl    # generated captions
 ```
 
-The teacher is the released SnapUGC EVQA stack in
-`third_party/SnapUGC_Engagement/ECR_inference`. It combines EfficientNetV2,
-UVQ-style distortion features, ResNet3D, mPLUG-2, YAMNet sound labels, Stable
-Diffusion text encoder, and EVQA fusion/head.
+The official teacher is inference-only in this project; we use the released checkpoints and do not retrain the original teacher.
 
-### 2. Student Baseline
+### 3. Semi-Independent Student KD Training Architecture
 
-Input preset for the main thesis setting:
+The Student is designed as a highly compact model optimized for edge deployment. Its lightweight temporal Transformer processes frame-level and text features; the Proper KD preset replaces the teacher-dependent visual frontend with deployable CLIP and MobileNet backbones.
+
+The student architecture is evaluated under two distinct deployment paradigms:
+1. **Semi-independent / Head Distillation**: The student operates on pre-extracted video semantic and distortion features (`visual_text_sound` preset) plus CLIP features, and learns to mimic the teacher's fusion and prediction heads.
+2. **Proper / Full Pipeline KD**: The student replaces the teacher-dependent visual frontend with CLIP ViT-B/32 and MobileNetV3-Small. The current experiment still reads cached `text_pooled` features, so it validates an independent raw-video visual path but is not yet a fully packaged raw-input pipeline.
+
+The training diagram shows the full KD objective for the `visual_text_sound` student (`hidden_dim=96`, 1 Transformer layer, 4 heads). It uses `frame_fusion_feature`, CLIP keyframe features, and text context in the student forward pass. Ground-truth ECR and cached teacher outputs are connected only to the training objective and are not runtime inputs.
+
+![Semi-independent Student KD training architecture](./assets/architecture/student_training.png)
+
+### 4. Proper KD Student Inference Architecture
+
+The deployment graph uses the `clip_mobilenet_text` preset. Sampled video
+frames are encoded by CLIP ViT-B/32 and MobileNetV3-Small, concatenated per time
+step, and processed by the compact temporal Transformer with title/description
+context. Teacher visual features and all training-only KD targets are absent
+from this ECR path.
+
+![Proper KD Student inference architecture](./assets/architecture/student_inference.png)
+
+The two student diagrams intentionally document two evaluated presets: the teacher-frontend-dependent `visual_text_sound` configuration and the independent-visual `clip_mobilenet_text` configuration.
+
+### Student Model Hyperparameters
+
+The base compact student configuration (preset: `visual_text_sound`) uses:
 
 ```text
-visual_text
-- frame_fusion_feature: T x 1024
-- title pooled text embedding: 1 x 768
-- description pooled text embedding: 1 x 768
+hidden_dim = 96
+Transformer layers = 1
+heads = 4
+dropout = 0.25
+max_clips = 16
+quality_fusion = clip_add
 ```
 
-Objective:
+### Student KD Loss Formulation
 
-```text
-MSE(student_ecr, true_ecr)
-```
-
-### 3. Student KD
-
-Same inference inputs as baseline. Additional training losses mimic the teacher:
+During training, the student optimizes the following multi-component objective:
 
 ```text
 loss_kd =
@@ -224,465 +367,165 @@ loss_kd =
 + clip_ecr      * MSE(student_clip_ecr, teacher_clip_ecr)
 + temporal      * repr_loss(project(student_temporal), teacher_temporal_hidden)
 + fusion        * repr_loss(project(student_hidden), mean(teacher_fusion_hidden))
-+ attention     * KL(student_attention, teacher_attention)
++ attention     * KL(student_temporal_attention, teacher_attention_importance)
 + hard_rank     * pairwise_rank(student_ecr, true_ecr)
 + teacher_rank  * pairwise_rank(student_ecr, teacher_ecr)
 ```
 
-The tuned compact student uses:
+The eight terms above are the core objective. The deployed best configuration
+additionally enables small-weight auxiliary ranking/relation terms
+(`teacher_pearson`, `teacher_spearman`, `teacher_listwise`,
+`student_teacher_relation`, `contrastive_hidden`); these are training-only and
+contribute marginally on top of the core terms.
 
-```text
-hidden_dim = 96
-Transformer layers = 1
-heads = 4
-dropout = 0.22
-max_clips = 16
-repr_loss = cosine
-```
+### Scientific Loss Functions & Published Papers
 
-## GCloud GPU Training Setup
+Our KD architecture integrates advanced loss terms inspired by key scientific publications:
 
-The original GPU VM:
+1. **Classic Logit KD & Soft Targets** (Hinton et al., NeurIPS 2015)
+   * *Loss terms*: `soft_ecr` and `clip_ecr`.
+   * *Concept*: Distills continuous soft predictions, transferring the "dark knowledge" of the teacher's absolute quality ratings.
+   * *Paper*: *Distilling the Knowledge in a Neural Network*.
 
-```text
-name: evqa-training
-zone: asia-southeast1-b
-machine: g2-standard-12
-gpu: 1 x NVIDIA L4
-boot disk: 200GB pd-balanced
-project path: ~/workspace/SnapUGC-LightKD
-checkpoint path: ~/workspace/snapugc-checkpoints
-video path: ~/workspace/snapugc-data/train_videos_balanced_5000
-```
+2. **FitNets Feature Alignment** (Romero et al., ICLR 2015)
+   * *Loss terms*: `temporal` and `fusion`.
+   * *Concept*: Aligns intermediate hidden states using a projection head to map student dimensions to the teacher's space.
+   * *Paper*: *FitNets: Hints for Thin Deep Nets*.
 
-Install/update code on the VM:
+3. **Attention Transfer (AT)** (Zagoruyko & Komodakis, ICLR 2017)
+   * *Loss term*: `attention`.
+   * *Concept*: Forces the student's temporal attention weights to mimic the teacher's attention maps via KL Divergence.
+   * *Paper*: *Paying More Attention to Attention: Improving the Performance of Convolutional Neural Networks via Attention Transfer*.
 
-```bash
-cd ~/workspace/SnapUGC-LightKD
-source .venv/bin/activate
-pip install -U pip
-pip install -e .
-```
+4. **Pairwise Ranking Loss**
+   * *Loss terms*: `hard_rank` and `teacher_rank`.
+   * *Concept*: Optimizes relative ranking order among samples to ensure the student ranks video quality consistently with the teacher and ground truth.
 
-Install CUDA-compatible PyTorch for the current driver. On the original L4 VM
-with NVIDIA driver 550 / CUDA 12.4, a working PyTorch pair was:
+### Loss Function Ablation Study
 
-```bash
-pip install --index-url https://download.pytorch.org/whl/cu124 \
-  torch==2.5.1 torchvision==0.20.1
-```
+To systematically evaluate the contribution of each distillation layer, we perform a grouped cumulative ablation on the validation split using the `visual_text_sound` preset. The results are verified from training logs on disk:
 
-Useful GPU check:
+| Tier | Loss Terms Included | Scientific Reference Mapping | Validation Final Score | Marginal Gain |
+| :--- | :--- | :--- | :---: | :---: |
+| **0. Baseline (No KD)** | `hard_ecr` | Standard regression baseline | **0.5609** | — |
+| **1. Logit KD** | `hard_ecr` + `soft_ecr` + `clip_ecr` | Hinton et al. (NeurIPS 2015) | **0.5982** | `+0.0373` |
+| **2. Feature & Attn KD** | Tier 1 + `temporal` + `fusion` + `attention` | Romero et al. (FitNets), Zagoruyko et al. (AT) | **0.6056** | `+0.0074` |
+| **3. Full Student KD** | Tier 2 + `hard_rank` + `teacher_rank` + relation losses | Pairwise/listwise ranking and hidden relation losses | **0.6273** | `+0.0217` |
 
-```bash
-nvidia-smi
-.venv/bin/python - <<'PY'
-import torch
-print(torch.__version__)
-print(torch.version.cuda)
-print(torch.cuda.is_available())
-if torch.cuda.is_available():
-    print(torch.cuda.get_device_name(0))
-PY
-```
+**Key Takeaways for Thesis Writing**:
+- **Logit matching (Tier 1)** contributes the single largest individual performance leap (`+0.0373`), demonstrating the value of transferring continuous soft targets compared to hard ground-truth labels alone.
+- **Pairwise and relation losses (Tier 3)** add a substantial gain of `+0.0217`, showing that relative order supervision is highly beneficial for subjective quality regression.
+- **Feature and attention alignment (Tier 2)** provide a smaller but consistent representation-level gain.
 
-Run the full GCloud pipeline:
+### Best Training Command (CLIP clip_add + Full KD)
+
+Step 1 — Extract CLIP ViT-B/32 keyframe features:
 
 ```bash
-cd ~/workspace/SnapUGC-LightKD
-
-nohup env \
-  ROOT_DIR=$HOME/workspace/SnapUGC-LightKD \
-  SUBSET_CSV=$HOME/workspace/SnapUGC-LightKD/data/official_5k_split/split_all_5000.csv \
-  VIDEO_DIR=$HOME/workspace/snapugc-data/train_videos_balanced_5000 \
-  OUT_DIR=$HOME/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32 \
-  KD_OUT_DIR=$HOME/workspace/results/kd_tuning_official_5k/v05_small_cosine_rank \
-  CHECKPOINT_DIR=$HOME/workspace/snapugc-checkpoints \
-  OFFICIAL_REPO_DIR=$HOME/workspace/SnapUGC_Engagement \
-  KAGGLE_NETRC=$HOME/workspace/kaggle.netrc \
-  SHUTDOWN_ON_EXIT=0 \
-  bash scripts/run_gcp_full_pipeline.sh \
-  > ~/workspace/snapugc_full_pipeline.nohup.log 2>&1 &
+python scripts/extract_clip_keyframe_features.py \
+  --tar results/videos_5000.tar \
+  --labels-csv data/train_subset_balanced_5000.csv \
+  --out results/clip_vitb32_keyframe_features_5000.npz \
+  --model ViT-B-32 --pretrained openai \
+  --n-frames 16 --device mps
 ```
 
-Check progress:
-
-```bash
-tail -f ~/workspace/snapugc_full_pipeline.nohup.log
-ps aux | grep -E 'run_gcp_full_pipeline|run_official|train_official|python' | grep -v grep
-nvidia-smi
-```
-
-If teacher artifact export finished but KD needs resume:
-
-```bash
-nohup bash scripts/resume_gcp_after_artifacts.sh \
-  > ~/workspace/snapugc_resume_pipeline.nohup.log 2>&1 &
-
-tail -f ~/workspace/snapugc_resume_pipeline.nohup.log
-```
-
-Known memory-safe settings for the official teacher export:
-
-```text
-SNAPUGC_DATALOADER_WORKERS=0
-SNAPUGC_OFFICIAL_FRAME_BATCH=8
-SNAPUGC_MPLUG_CLIP_BATCH=1
-SNAPUGC_CAPTION_NUM_FRAMES=8
-```
-
-The project patches the vendored official inference at runtime to use these
-environment variables, `torch.inference_mode()`, and `torch.cuda.empty_cache()`.
-
-## Student KD Training Command
+Step 2 — Train the student:
 
 ```bash
 python scripts/train_official_student_kd.py \
   --artifact-dir results/original_snapugc_official_balanced_5000_artifacts_g2_32/teacher_artifacts \
-  --labels-csv data/official_5k_split/split_all_5000.csv \
-  --save-dir results/kd_tuning_official_5k/v05_small_cosine_rank \
-  --input-preset visual_text \
-  --epochs 40 \
-  --batch 64 \
-  --eval-batch 256 \
-  --hidden-dim 96 \
-  --layers 1 \
-  --heads 4 \
-  --dropout 0.22 \
-  --lr 4e-4 \
-  --weight-decay 0.03 \
-  --repr-loss cosine \
-  --soft-weight 1.1 \
-  --clip-weight 0.08 \
-  --temporal-weight 0.02 \
-  --fusion-weight 0.02 \
-  --attention-weight 0.005 \
-  --hard-rank-weight 0.02 \
-  --teacher-rank-weight 0.12
+  --labels-csv data/train_subset_balanced_5000.csv \
+  --save-dir results/kd_tuning_official_5k/student_kd_full_clipadd \
+  --input-preset visual_text_sound \
+  --quality-features results/clip_vitb32_keyframe_features_5000.npz \
+  --quality-fusion clip_add \
+  --hidden-dim 96 --layers 1 --heads 4 \
+  --dropout 0.25 --epochs 100 --batch 32 --eval-batch 128 \
+  --lr 5e-4 --weight-decay 0.02 \
+  --val-ratio 0.2 --seed 42 --device mps --run-kind kd \
+  --soft-weight 1.1 --clip-weight 0.08 \
+  --temporal-weight 0.02 --fusion-weight 0.02 --attention-weight 0.005 \
+  --hard-rank-weight 0.04 \
+  --teacher-rank-weight 0.18 --teacher-pearson-weight 0.02 \
+  --teacher-spearman-weight 0.015 --teacher-listwise-weight 0.02 \
+  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02
 ```
 
-Output:
+See [student_kd_architecture.md](./docs/student_kd_architecture.md) for more details.
+
+## Experimental Results
+
+### Final 4000/500/500 protocol
+
+Five Full-KD runs use the same explicit split IDs and training seeds 42–46.
+Checkpoints are selected only on the 500-video validation set and then evaluated
+on the 500-video locked student test.
+
+| Model | Evaluated inputs | PLCC | SRCC | Final Score | Raw-input E2E params* (% teacher) | E2E latency / video |
+| :--- | :--- | ---: | ---: | ---: | ---: | :--- |
+| EVQA teacher reference | Raw video + title + description | 0.6958 | 0.6854 | **0.6895** | ~1,801.70M (100%) | ~34.6 s observed† |
+| Baseline Student, no KD (Transformer) | Cached `frame_fusion` + CLIP + text | 0.5925 ± 0.0069 | 0.5911 ± 0.0054 | 0.5917 ± 0.0040 | ~274.11M (15.21%) | Not measured E2E‡ |
+| Basic KD Student (logit-only) | Cached `frame_fusion` + CLIP + text | 0.6140 ± 0.0015 | 0.6066 ± 0.0032 | 0.6095 ± 0.0025 | ~274.11M (15.21%) | Not measured E2E‡ |
+| MLP Student, no KD | Pooled cached `frame_fusion` + CLIP + text | 0.5856 ± 0.0042 | 0.5844 ± 0.0083 | 0.5849 ± 0.0059 | ~274.00M (15.21%) | Not measured E2E‡ |
+| Ridge Student | Pooled cached `frame_fusion` + CLIP + text | 0.3745 | 0.3829 | 0.3795 | ~274.11M (15.21%) + regressor | Not measured E2E‡ |
+| RBF-SVR Student | Pooled cached `frame_fusion` + CLIP + text | 0.5630 | 0.5556 | 0.5585 | ~274.11M (15.21%) + support vectors | Not measured E2E‡ |
+| **Full KD Student** | Cached `frame_fusion` + CLIP + text | **0.6238 ± 0.0048** | **0.6149 ± 0.0056** | **0.6185 ± 0.0053** | **~274.11M (15.21%)** | Not measured E2E‡ |
+| Proper No KD (`clip_mobilenet_text`, seed 42) | Raw-video CLIP + MobileNet; regenerated title/description text | 0.4927 | 0.4835 | 0.4871 | ~217.12M (12.05%) | Not measured E2E |
+| Proper Basic KD, teacher ECR only (`clip_mobilenet_text`, seed 42) | Raw-video CLIP + MobileNet; regenerated title/description text | 0.5524 | 0.5386 | 0.5441 | ~217.12M (12.05%) | Not measured E2E |
+| Proper / Full Pipeline KD (`clip_mobilenet_text`) | Raw-video CLIP + MobileNet; regenerated title/description text | 0.5699 | 0.5631 | 0.5658 | ~217.12M (12.05%) | ≤6.85 s measured§ |
+
+Full KD beats logit-only KD on all `5/5` paired seeds. Its paired Final gain is
+`+0.0089 ± 0.0032`, with a 95% t-interval `[+0.0050, +0.0129]`. Full KD also
+improves over the hard-label Transformer mean by `+0.0268` Final. These results
+separate the benefit of multi-loss distillation from the easier test sample.
+
+The three Proper configurations close the independent-input ablation: all use
+seed 42, the same CLIP + MobileNet input, student architecture, 4000/500/500
+split, and checkpoint-selection protocol. Proper No KD optimizes only
+`MSE(student_ecr, true_ecr)`. Proper Basic KD optimizes only
+`MSE(student_ecr, teacher_ecr)`, with no hard-label, feature, attention,
+ranking, or relation losses. Proper Full KD uses the complete objective.
+
+Teacher-ECR-only distillation raises Final from `0.4871` to `0.5441`
+(`+0.0569`), while the remaining full-KD signals add another `+0.0217`, reaching
+`0.5658`. End to end, Full KD improves PLCC by `+0.0772`, SRCC by `+0.0796`,
+and Final by `+0.0786` over No KD. This result shows that distillation remains
+effective after removing the teacher's `frame_fusion` input and separates the
+large contribution of soft teacher ECR from the additional contribution of
+feature, attention, ranking, and relation transfer. Together with the lower
+Proper Full-KD score relative to semi-independent Full KD, it supports the
+interpretation that much of the remaining gap comes from the independent
+student's weaker input representation rather than a failure of the KD
+objective. Because the Proper comparison currently has one paired seed, these
+effect sizes should not yet be reported as multi-seed means or confidence
+intervals.
+
+Sources:
 
 ```text
-official_student_kd_report.json
-student_baseline_best.pth
-student_kd_best.pth
+results/final_4000_500_500_2026/full_locked_test_evaluation.json
+results/final_4000_500_500_2026/full_locked_test_predictions.csv
+results/final_4000_500_500_2026/logit_locked_test_evaluation.json
+results/final_4000_500_500_2026/hard_transformer_locked_test_evaluation.json
+results/final_4000_500_500_2026/hard_mlp_locked_test_evaluation.json
+results/final_4000_500_500_2026/proper_no_kd_locked_test_evaluation.json
+results/final_4000_500_500_2026/proper_basic_kd_locked_test_evaluation.json
+results/final_4000_500_500_2026/proper_kd_locked_test_evaluation.json
+results/final_4000_500_500_2026/tabular_baselines.json
 ```
 
-## Explanation Modes
+\*Counts include pretrained neural feature extractors required to recreate the evaluated inputs; decoding/tokenization is excluded. Classical estimator state is listed separately because support vectors are not neural parameters.
 
-### Artifact-Based Explanation
+†Observed wall-clock throughput from the historical 5,000-video L4 teacher run, including artifact export; not a controlled same-hardware benchmark.
 
-Use this for a video already present in teacher artifacts:
+‡Only cached-input forward latency has been measured for these models (Full KD median `1.931 ms` on Apple M5). A raw-video E2E value is intentionally not inferred because producing `frame_fusion` requires the teacher frontend.
 
-```bash
-python scripts/infer_one_video_with_expl.py \
-  --artifact-dir results/original_snapugc_official_balanced_5000_artifacts_g2_32/teacher_artifacts \
-  --labels-csv data/official_5k_split/split_all_5000.csv \
-  --video-id VIDEO_ID \
-  --report-json results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json \
-  --device cpu \
-  --topk 3 \
-  --out-json results/explanations/VIDEO_ID.json
-```
+§A real cold raw-video Proper-KD run took `6.85 s`, but also generated counterfactual explanations and thumbnails. Therefore `6.85 s` is an upper bound on prediction-only inference, not a pure latency measurement.
 
-This mode uses teacher artifacts to inspect what the student learned. It is
-useful for offline analysis, but it is not the final deployment path.
+The cached-input latency benchmark for the four neural student heads is stored
+in `docs/benchmarks/student_forward_latency_apple_m5_4000_500_500.json`.
 
-### Student-Only New-Video Explanation
+### KD Efficiency Reporting Convention
 
-Use this for a completely new video:
-
-```bash
-python scripts/infer_new_video_with_student_expl.py \
-  --video /path/to/new_video.mp4 \
-  --title "Short, specific title" \
-  --description "Optional context" \
-  --report-json results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json \
-  --checkpoint results/kd_tuning_official_5k/v05_small_cosine_rank/student_kd_best.pth \
-  --labels-csv data/official_5k_split/split_all_5000.csv \
-  --out-json results/demo_runs/example/result.json \
-  --assets-dir results/demo_runs/example/assets
-```
-
-This path does **not** call the teacher. It builds native inputs from sampled
-frames, lightweight visual metrics / EfficientNet features when available, and
-metadata text embeddings.
-
-The new-video explanation flow is:
-
-```text
-student prediction
-  -> clip/text ablation and attention evidence
-  -> semantic labels for important clips/text
-  -> optional LLM explanation, or deterministic template fallback
-  -> split recommendations for post-production vs content changes
-```
-
-The explanation returns:
-
-```text
-- predicted ECR
-- low/medium/high band
-- top temporal clips
-- thumbnail images for top clips
-- text stream contribution
-- semantic attributes
-- semantic_explanation generated by LLM or fallback template
-- actionable recommendations split into post-production/metadata and content/direction changes
-```
-
-Semantic attribute fields:
-
-```text
-hook_strength
-motion_action
-visual_clarity
-lighting_quality
-text_specificity
-pacing_variety
-```
-
-These attributes are not a separately trained concept bottleneck model. The
-current thesis framing is **semantic labeling -> LLM/template explanation**:
-selected student evidence is verbalized for normal readers, then ablations check
-whether the mentioned evidence affects the student prediction.
-
-Optional remote API LLM settings:
-
-```bash
-export SNAPUGC_LLM_BACKEND="openai"
-export SNAPUGC_LLM_API_KEY="..."
-export SNAPUGC_LLM_BASE_URL="https://api.openai.com/v1"   # optional
-export SNAPUGC_LLM_MODEL="gpt-4o-mini"                    # optional
-```
-
-Optional local/offline LLM settings:
-
-```bash
-python scripts/prepare_local_llm.py \
-  --model Qwen/Qwen2.5-3B-Instruct \
-  --cache-dir ~/.cache/snapugc-local-llm
-
-export SNAPUGC_LLM_BACKEND="local"
-export SNAPUGC_LOCAL_LLM_MODEL="Qwen/Qwen2.5-3B-Instruct"
-export SNAPUGC_LOCAL_LLM_CACHE="$HOME/.cache/snapugc-local-llm"
-```
-
-Use `Qwen/Qwen2.5-3B-Instruct` for a stronger offline demo on Apple Silicon
-machines with enough memory, such as an M1 Max with 64GB RAM. Use
-`Qwen/Qwen2.5-0.5B-Instruct` only for very small machines, or try
-`Qwen/Qwen2.5-7B-Instruct` if you can tolerate slower generation. For
-defense/demo without a VM, pre-download the local model on your laptop, keep the
-checkpoint/report files local, and run the UI locally. If no API key or local
-model is configured, inference still works and uses a deterministic template
-over the same semantic evidence package. Use `--disable-llm` to force template
-mode.
-
-Convenience local-LLM demo command:
-
-```bash
-SNAPUGC_PREPARE_LOCAL_LLM=1 \
-SNAPUGC_REPORT_JSON=results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json \
-SNAPUGC_STUDENT_CHECKPOINT=results/kd_tuning_official_5k/v05_small_cosine_rank/student_kd_best.pth \
-SNAPUGC_LABELS_CSV=data/official_5k_split/split_all_5000.csv \
-scripts/run_demo_local_llm.sh
-```
-
-Set `SNAPUGC_PREPARE_LOCAL_LLM=1` only the first time to download/cache the
-model. Later runs can omit it and work offline from the local cache.
-
-## Demo UI
-
-Install:
-
-```bash
-pip install -r requirements-demo.txt
-```
-
-Run locally:
-
-```bash
-uvicorn demo_app.app:app --host 127.0.0.1 --port 7860
-```
-
-Open:
-
-```text
-http://127.0.0.1:7860
-```
-
-The UI lets you upload a video, enter title/description, and returns the full
-student-only prediction + explanation report. After the first analysis, use
-`Chỉnh video` to run the deterministic auto-edit loop:
-
-```text
-original video -> explain weak/non-top clips -> feasible OpenCV/ffmpeg edits
--> edited video -> rerun student inference -> before/after ECR comparison
-```
-
-The auto-edit module intentionally does **not** invent new scenes, actions, or
-objects. It only applies feasible local edits such as brightness, contrast,
-sharpness, and saturation to selected clips while preserving the original video
-timeline.
-
-## GCloud Demo VM
-
-When the original L4 VM cannot start because of GCP capacity stockout, a CPU
-clone can run the demo UI. The current clone setup was:
-
-```text
-original GPU VM: evqa-training
-zone: asia-southeast1-b
-machine: g2-standard-12
-status during stockout: TERMINATED
-
-CPU demo clone: evqa-training-demo
-zone: asia-southeast1-a
-machine: n2-standard-8
-disk: evqa-training-demo-disk
-source snapshot: evqa-training-boot-20260525-224211
-```
-
-The clone is for demo/inference only. It has no GPU and should not be used to
-rerun the full teacher pipeline.
-
-Start demo server on the VM:
-
-```bash
-cd ~/workspace/SnapUGC-LightKD
-source .venv/bin/activate
-pip install -r requirements-demo.txt
-
-nohup env \
-  SNAPUGC_REPORT_JSON=$HOME/workspace/results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json \
-  SNAPUGC_STUDENT_CHECKPOINT=$HOME/workspace/results/kd_tuning_official_5k/v05_small_cosine_rank/student_kd_best.pth \
-  SNAPUGC_LABELS_CSV=$HOME/workspace/SnapUGC-LightKD/data/official_5k_split/split_all_5000.csv \
-  SNAPUGC_EFFICIENTNET_WEIGHTS=$HOME/workspace/snapugc-checkpoints/efficientnet_v2_s_21k_ft1k-dbb43f38.pth \
-  .venv/bin/python -m uvicorn demo_app.app:app --host 127.0.0.1 --port 7860 \
-  > ~/workspace/snapugc_demo_ui.nohup.log 2>&1 &
-```
-
-Check:
-
-```bash
-curl http://127.0.0.1:7860/health
-tail -f ~/workspace/snapugc_demo_ui.nohup.log
-```
-
-Tunnel from your local machine:
-
-```bash
-gcloud compute ssh aothuat0424@evqa-training-demo \
-  --zone asia-southeast1-a \
-  -- -L 7860:localhost:7860
-```
-
-Open locally:
-
-```text
-http://localhost:7860
-```
-
-Stop the demo VM from local/cloud shell:
-
-```bash
-gcloud compute instances stop evqa-training-demo --zone asia-southeast1-a
-```
-
-Do not run that stop command from inside the VM unless the VM service account
-has Compute API scopes and IAM permissions. From inside the VM you may see:
-
-```text
-ACCESS_TOKEN_SCOPE_INSUFFICIENT
-```
-
-because the active account is the instance service account, not your local
-Google account.
-
-## GCloud Stockout Notes
-
-If `evqa-training` cannot start:
-
-```text
-ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS
-g2-standard-12 with nvidia-l4 currently unavailable
-```
-
-Options:
-
-1. Try later in the same zone.
-2. Try another zone with L4/G2 capacity.
-3. Create a CPU clone from a boot-disk snapshot for UI demo only.
-
-Safe CPU clone flow:
-
-```bash
-SNAP=evqa-training-boot-$(date +%Y%m%d-%H%M%S)
-gcloud compute snapshots create "$SNAP" \
-  --source-disk=evqa-training \
-  --source-disk-zone=asia-southeast1-b \
-  --storage-location=asia-southeast1
-
-gcloud compute disks create evqa-training-demo-disk \
-  --zone asia-southeast1-a \
-  --source-snapshot "$SNAP" \
-  --type pd-balanced \
-  --size 200GB
-
-gcloud compute instances create evqa-training-demo \
-  --zone asia-southeast1-a \
-  --machine-type n2-standard-8 \
-  --disk name=evqa-training-demo-disk,boot=yes,auto-delete=no \
-  --network default \
-  --subnet default \
-  --maintenance-policy=MIGRATE \
-  --provisioning-model=STANDARD
-```
-
-This does not delete or modify the original GPU VM/disk.
-
-## Useful Commands
-
-Check active training/inference:
-
-```bash
-ps aux | grep -E 'run_gcp_full_pipeline|run_official|train_official|uvicorn|python' | grep -v grep
-```
-
-Check GPU:
-
-```bash
-nvidia-smi
-```
-
-Read demo output:
-
-```bash
-jq . results/demo_runs/example/result.json
-```
-
-Read explanation sections:
-
-```bash
-jq '.scores' result.json
-jq '.nla_style_explanation.summary' result.json
-jq '.semantic_explanation.llm' result.json
-jq '.evidence.top_clips' result.json
-jq '.semantic_attributes.attributes' result.json
-jq '.recommendations' result.json
-```
-
-## Thesis Interpretation
-
-The clean thesis statement is:
-
-```text
-The teacher model is used offline to generate soft labels and explanation
-proxies. After distillation, the compact student predicts and explains new
-videos without querying the teacher at inference time.
-```
-
-This protects the main distillation claim: the deployed/demo path is smaller
-and teacher-free, while the teacher remains the source of supervision during
-training.
+Major KD work reports the model that actually runs at inference, not only the newly trained head. [DistilBERT](https://arxiv.org/abs/1910.01108) reports both model-size reduction and inference speed, while [TinyBERT](https://aclanthology.org/2020.findings-emnlp.372/) places `#Params`, FLOPs, and measured speedup beside task quality. Following that convention, this README uses raw-input end-to-end parameters for compression claims and retains student-module parameters only for checkpoint reproducibility. FLOPs and same-hardware latency remain future measurements and must not be inferred from parameter count alone.
