@@ -16,7 +16,7 @@ import urllib.request
 from functools import lru_cache
 from typing import Any
 
-DEFAULT_LOCAL_LLM_MODEL = "Qwen/Qwen2.5-3B-Instruct"
+DEFAULT_LOCAL_LLM_MODEL = "Qwen/Qwen3.5-4B"
 DEFAULT_LOCAL_LLM_MAX_NEW_TOKENS = 800
 DEFAULT_LOCAL_LLM_RETRY_TOKENS = 1200
 
@@ -92,8 +92,9 @@ def generate_semantic_explanation(
 
     Environment variables:
     - SNAPUGC_LLM_BACKEND: auto, local, openai, template. Default auto.
-    - SNAPUGC_LOCAL_LLM_MODEL, default Qwen/Qwen2.5-3B-Instruct.
+    - SNAPUGC_LOCAL_LLM_MODEL, default Qwen/Qwen3.5-4B.
     - SNAPUGC_LOCAL_LLM_CACHE, optional Hugging Face cache directory.
+    - SNAPUGC_LLM_FALLBACK_TO_OPENAI, default true for a failed local model.
     - SNAPUGC_LLM_API_KEY or OPENAI_API_KEY
     - SNAPUGC_LLM_BASE_URL, default https://api.openai.com/v1
     - SNAPUGC_LLM_MODEL, default gpt-4o-mini
@@ -105,23 +106,65 @@ def generate_semantic_explanation(
     backend = os.environ.get("SNAPUGC_LLM_BACKEND", "auto").strip().lower()
     if backend == "template":
         return template_semantic_explanation(payload, language=language, fallback_reason="template_backend")
-    if backend in {"local", "transformers", "hf"}:
-        return generate_local_transformers_explanation(payload, language=language)
-    if backend == "auto" and _local_model_available():
-        local = generate_local_transformers_explanation(payload, language=language)
-        if local["llm"]["used_llm"]:
-            return local
-
-    if backend not in {"auto", "openai", "api", "remote"}:
+    local_backends = {"local", "transformers", "hf"}
+    remote_backends = {"openai", "api", "remote"}
+    if backend not in {"auto", *local_backends, *remote_backends}:
         return template_semantic_explanation(
             payload,
             language=language,
             fallback_reason=f"unknown_backend:{backend}",
         )
 
+    local_failure: str | None = None
+    should_try_local = backend in local_backends or (backend == "auto" and _local_model_available())
+    if should_try_local:
+        local = generate_local_transformers_explanation(payload, language=language)
+        if local["llm"]["used_llm"]:
+            return local
+        local_failure = str(local["llm"].get("fallback_reason") or "local_llm_failed")
+        if backend in local_backends and not _env_flag("SNAPUGC_LLM_FALLBACK_TO_OPENAI", True):
+            return local
+    elif backend == "auto":
+        local_failure = "local_model_not_cached"
+
+    if backend in local_backends and not _env_flag("SNAPUGC_LLM_FALLBACK_TO_OPENAI", True):
+        return template_semantic_explanation(
+            payload,
+            language=language,
+            fallback_reason=local_failure or "local_llm_unavailable",
+        )
+
     api_key = os.environ.get("SNAPUGC_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        return template_semantic_explanation(payload, language=language, fallback_reason="missing_api_key")
+        reason = "missing_api_key"
+        if local_failure:
+            reason = f"{local_failure}; openai_fallback_unavailable:{reason}"
+        return template_semantic_explanation(payload, language=language, fallback_reason=reason)
+
+    remote = _generate_openai_compatible_explanation(
+        payload,
+        language=language,
+        api_key=api_key,
+    )
+    if remote["llm"]["used_llm"] and local_failure:
+        remote["llm"]["fallback_from"] = {
+            "provider": "local_transformers",
+            "model": os.environ.get("SNAPUGC_LOCAL_LLM_MODEL", DEFAULT_LOCAL_LLM_MODEL),
+            "reason": local_failure,
+        }
+    elif local_failure:
+        remote_reason = str(remote["llm"].get("fallback_reason") or "openai_fallback_failed")
+        remote["llm"]["fallback_reason"] = f"{local_failure}; {remote_reason}"
+    return remote
+
+
+def _generate_openai_compatible_explanation(
+    payload: dict[str, Any],
+    *,
+    language: str,
+    api_key: str,
+) -> dict[str, Any]:
+    """Call an OpenAI-compatible chat-completions endpoint."""
 
     base_url = os.environ.get("SNAPUGC_LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     model = os.environ.get("SNAPUGC_LLM_MODEL", "gpt-4o-mini")
@@ -169,7 +212,15 @@ def generate_semantic_explanation(
             payload=payload,
             language=language,
         )
-    except (KeyError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (
+        KeyError,
+        json.JSONDecodeError,
+        SyntaxError,
+        ValueError,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+    ) as exc:
         return template_semantic_explanation(
             payload,
             language=language,
@@ -184,31 +235,37 @@ def generate_local_transformers_explanation(
 ) -> dict[str, Any]:
     model_id = os.environ.get("SNAPUGC_LOCAL_LLM_MODEL", DEFAULT_LOCAL_LLM_MODEL)
     try:
-        tokenizer, model = _load_local_transformers_model(model_id)
+        processor, model = _load_local_transformers_model(model_id)
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You write concise, grounded explanations for a student video engagement model. "
-                    "Return JSON only."
-                ),
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "You write concise, grounded explanations for a student video "
+                            "engagement model. Return JSON only."
+                        ),
+                    }
+                ],
             },
-            {"role": "user", "content": _prompt(payload, language=language)},
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": _prompt(payload, language=language)}],
+            },
         ]
-        if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
-            prompt = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        else:
-            prompt = "\n\n".join(f"{m['role']}: {m['content']}" for m in messages) + "\nassistant:"
-
         import torch
 
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        inputs = processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+            enable_thinking=False,
+        ).to(model.device)
         parsed, attempts, token_budget = _generate_local_json(
-            tokenizer=tokenizer,
+            tokenizer=processor,
             model=model,
             inputs=inputs,
             torch_module=torch,
@@ -340,6 +397,7 @@ def _generate_local_json(
 
     last_error: Exception | None = None
     for attempt, token_budget in enumerate(_local_generation_token_budgets(), start=1):
+        decoder = getattr(tokenizer, "tokenizer", tokenizer)
         with torch_module.no_grad():
             output = model.generate(
                 **inputs,
@@ -347,10 +405,10 @@ def _generate_local_json(
                 do_sample=False,
                 temperature=None,
                 top_p=None,
-                pad_token_id=tokenizer.eos_token_id,
+                pad_token_id=decoder.eos_token_id,
             )
         generated = output[0][inputs["input_ids"].shape[-1] :]
-        content = tokenizer.decode(generated, skip_special_tokens=True)
+        content = decoder.decode(generated, skip_special_tokens=True)
         try:
             return _parse_json_object(content), attempt, token_budget
         except (json.JSONDecodeError, SyntaxError, ValueError) as exc:
@@ -547,23 +605,23 @@ def _payload_has_attribute(payload: dict[str, Any], *, name: str, label: str) ->
 
 @lru_cache(maxsize=2)
 def _load_local_transformers_model(model_id: str) -> tuple[Any, Any]:
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForMultimodalLM, AutoProcessor
 
     cache_dir = os.environ.get("SNAPUGC_LOCAL_LLM_CACHE") or None
-    tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir)
+    processor = AutoProcessor.from_pretrained(model_id, cache_dir=cache_dir)
     kwargs: dict[str, Any] = {"cache_dir": cache_dir}
     try:
         import torch
 
         if torch.cuda.is_available():
-            kwargs.update({"torch_dtype": "auto", "device_map": "auto"})
+            kwargs.update({"dtype": "auto", "device_map": "auto"})
         elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-            kwargs.update({"torch_dtype": torch.float16})
+            kwargs.update({"dtype": torch.float16})
         else:
-            kwargs.update({"torch_dtype": torch.float32})
+            kwargs.update({"dtype": torch.float32})
     except Exception:
         pass
-    model = AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
+    model = AutoModelForMultimodalLM.from_pretrained(model_id, **kwargs)
     try:
         import torch
 
@@ -576,14 +634,12 @@ def _load_local_transformers_model(model_id: str) -> tuple[Any, Any]:
     except Exception:
         pass
     model.eval()
-    return tokenizer, model
+    return processor, model
 
 
 def _local_model_available() -> bool:
-    model_id = os.environ.get("SNAPUGC_LOCAL_LLM_MODEL")
+    model_id = os.environ.get("SNAPUGC_LOCAL_LLM_MODEL", DEFAULT_LOCAL_LLM_MODEL)
     cache_dir = os.environ.get("SNAPUGC_LOCAL_LLM_CACHE")
-    if not model_id:
-        return False
     try:
         from transformers import AutoConfig
 
@@ -591,6 +647,13 @@ def _local_model_available() -> bool:
         return True
     except Exception:
         return False
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _join_evidence_bits(bits: list[str], *, english: bool) -> str:

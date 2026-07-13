@@ -4,9 +4,10 @@ set -euo pipefail
 ROOT_DIR="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT_DIR"
 
-export SNAPUGC_LLM_BACKEND="${SNAPUGC_LLM_BACKEND:-local}"
-export SNAPUGC_LOCAL_LLM_MODEL="${SNAPUGC_LOCAL_LLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}"
+export SNAPUGC_LLM_BACKEND="${SNAPUGC_LLM_BACKEND:-auto}"
+export SNAPUGC_LOCAL_LLM_MODEL="${SNAPUGC_LOCAL_LLM_MODEL:-Qwen/Qwen3.5-4B}"
 export SNAPUGC_LOCAL_LLM_CACHE="${SNAPUGC_LOCAL_LLM_CACHE:-$HOME/.cache/snapugc-local-llm}"
+export SNAPUGC_LLM_FALLBACK_TO_OPENAI="${SNAPUGC_LLM_FALLBACK_TO_OPENAI:-1}"
 
 if [[ "${SNAPUGC_PREPARE_LOCAL_LLM:-0}" == "1" ]]; then
   python scripts/prepare_local_llm.py \

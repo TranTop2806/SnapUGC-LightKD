@@ -1,0 +1,4 @@
+# Optional local Qwen3.5-4B runtime. The pinned Transformers revision is the
+# version verified by the demo; API/template explanation does not require it.
+transformers @ git+https://github.com/huggingface/transformers.git@11ed2ff4df5fdfb3117f0e3365ef6ad94081ba69
+sentence-transformers>=5.6.0

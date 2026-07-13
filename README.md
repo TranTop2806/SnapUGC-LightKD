@@ -208,6 +208,16 @@ python -m pip install -r requirements.txt -r requirements-demo.txt
 brew install ffmpeg  # macOS; otherwise install ffmpeg with the system package manager
 ```
 
+For the local Qwen3.5-4B verbalizer, also install its isolated runtime:
+
+```bash
+python -m pip install -r requirements-local-llm.txt
+```
+
+This optional file pins the tested Transformers revision required by Qwen3.5.
+Leaving it out keeps the core environment compatible with the older
+official-model notebooks and still allows OpenAI API or template explanations.
+
 Generated reports and checkpoints under `results/` are intentionally not
 tracked by Git. Place the Proper KD report/checkpoint at the default paths above
 or set `SNAPUGC_REPORT_JSON` and `SNAPUGC_STUDENT_CHECKPOINT` to existing local
@@ -229,14 +239,28 @@ bash scripts/run_demo_proper_kd_local_llm.sh
 ```
 
 Open `http://127.0.0.1:7861`. Override the port with
-`SNAPUGC_DEMO_PORT=<port>`. The launcher defaults to the local
-`Qwen/Qwen2.5-3B-Instruct` verbalizer. To run without an LLM, use:
+`SNAPUGC_DEMO_PORT=<port>`. The launcher defaults to `auto` mode with the local
+`Qwen/Qwen3.5-4B` verbalizer in non-thinking mode. The explanation backend is
+selected in this order: cached local Qwen, OpenAI-compatible API when an API
+key is configured, then the deterministic grounded template. To run without an
+LLM, use:
 
 ```bash
 SNAPUGC_LLM_BACKEND=template bash scripts/run_demo_proper_kd_local_llm.sh
 ```
 
-Optional remote LLM configuration:
+Optional OpenAI API fallback configuration:
+
+```bash
+export OPENAI_API_KEY="..."
+export SNAPUGC_LLM_MODEL="gpt-4o-mini"
+bash scripts/run_demo_proper_kd_local_llm.sh
+```
+
+With the default `auto` backend, these variables are used only when local Qwen
+is unavailable or inference fails. Set `SNAPUGC_LLM_FALLBACK_TO_OPENAI=0` with
+`SNAPUGC_LLM_BACKEND=local` to disable that fallback. To force a remote
+OpenAI-compatible endpoint instead of trying local Qwen first, use:
 
 ```bash
 export SNAPUGC_LLM_BACKEND="openai"
