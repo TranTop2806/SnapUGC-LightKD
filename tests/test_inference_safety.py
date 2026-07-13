@@ -10,12 +10,12 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import infer_new_video_with_student_expl as infer  # noqa: E402
+
 import demo_app.app as demo  # noqa: E402
 from snapugc_lightkd.explanations import explain_student_prediction  # noqa: E402
 from snapugc_lightkd.video_editing import _apply_operations, _mux_original_audio  # noqa: E402

@@ -26,9 +26,9 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import infer_new_video_with_student_expl as infer  # noqa: E402
+
 from snapugc_lightkd.official_student import OfficialArtifactStudent  # noqa: E402
 from snapugc_lightkd.video_editing import apply_feasible_video_edits  # noqa: E402
-
 
 OUTPUT_COLUMNS = [
     "Id",
@@ -574,7 +574,7 @@ def download_video(*, url: str, target: Path, timeout: int) -> None:
         "-o",
         str(part),
     ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         part.unlink(missing_ok=True)
         raise RuntimeError((result.stderr or f"curl_exit_{result.returncode}").strip())
