@@ -16,7 +16,6 @@ import urllib.request
 from functools import lru_cache
 from typing import Any
 
-
 DEFAULT_LOCAL_LLM_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 DEFAULT_LOCAL_LLM_MAX_NEW_TOKENS = 800
 DEFAULT_LOCAL_LLM_RETRY_TOKENS = 1200
