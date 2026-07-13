@@ -24,6 +24,16 @@ Balanced 5000-video subset
   -> lightweight student baseline and KD experiments
 ```
 
+The online demo is a separate teacher-free path:
+
+```text
+new video + title + description
+  -> CLIP ViT-B/32 + MobileNetV3-Small + Stable Diffusion text encoder
+  -> Proper KD student checkpoint
+  -> predicted ECR + grounded explanation + editable suggestions
+  -> optional bounded auto-edit and student rerun
+```
+
 The official teacher architecture is not reimplemented in
 `src/snapugc_lightkd/official_student.py`. A pinned local copy of the real teacher source
 lives in `third_party/SnapUGC_Engagement/ECR_inference/`. Runtime code patches
@@ -102,6 +112,9 @@ SnapUGC-LightKD/
     train_official_student_kd.py        # student baseline and KD training
     evaluate_student_ensemble.py        # ensemble evaluation over multiple checkpoints
     run_official_snapugc_evqa.py        # official teacher inference wrapper
+    infer_new_video_with_student_expl.py # Proper KD prediction and grounded explanation
+    run_demo_proper_kd_local_llm.sh      # local UI launcher (default port 7861)
+    run_proper_kd_auto_edit_batch.py     # batch analyze/edit/rerun workflow
     make_subset.py                      # create balanced 5k video subset
   src/snapugc_lightkd/     # student artifact dataset/model helpers
   third_party/             # pinned official teacher source, no checkpoints
@@ -121,16 +134,33 @@ official teacher wrapper.
 
 ## Explain Demo
 
-The deployment demo uses the Proper KD `clip_mobilenet_text` student. For a new
-video, it extracts CLIP ViT-B/32 and MobileNetV3-Small visual features, builds
-title/description text embeddings, predicts ECR without calling the teacher,
-and converts student evidence into a reader-friendly explanation.
+The current UI is a teacher-free Proper KD demo for new videos. It uses the
+`clip_mobilenet_text` checkpoint (`hidden_dim=192`, 2 Transformer layers) and
+reconstructs every online student input from the uploaded video and metadata:
+
+```text
+video -> at most 16 uniformly sampled clips
+      -> CLIP ViT-B/32 image embedding (512-D)
+      +  MobileNetV3-Small spatial-motion vector (1152-D)
+      -> T x 1664 visual student input
+
+title + description
+      -> Stable Diffusion CLIP text encoder with mean-token pooling
+      -> 3 x 768 checkpoint-compatible text input
+```
+
+The three text positions retain the training-time `sound/title/description`
+order. The current demo has no lightweight audio labeler, so `sound` is an
+empty placeholder. Empty sources are kept in the model tensor for checkpoint
+compatibility but are excluded from explanation ablation, ranking, and display.
+The teacher, EfficientNetV2-S, teacher artifacts, and KD losses are not called
+during demo inference.
 
 The default report and checkpoint are:
 
 ```text
-results/final_4000_500_500_2026/proper_kd_seed42/official_student_kd_report.json
-results/final_4000_500_500_2026/proper_kd_seed42/student_kd_best.pth
+results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json
+results/kd_tuning_official_5k/v05_small_cosine_rank/student_kd_best.pth
 ```
 
 ### Student-Only New-Video Explanation
@@ -140,9 +170,10 @@ python scripts/infer_new_video_with_student_expl.py \
   --video /path/to/new_video.mp4 \
   --title "Short, specific title" \
   --description "Optional context" \
-  --report-json results/final_4000_500_500_2026/proper_kd_seed42/official_student_kd_report.json \
-  --checkpoint results/final_4000_500_500_2026/proper_kd_seed42/student_kd_best.pth \
+  --report-json results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json \
+  --checkpoint results/kd_tuning_official_5k/v05_small_cosine_rank/student_kd_best.pth \
   --labels-csv data/official_5k_split/split_all_5000.csv \
+  --input-preset clip_mobilenet_text \
   --out-json results/demo_runs/example/result.json \
   --assets-dir results/demo_runs/example/assets
 ```
@@ -150,34 +181,60 @@ python scripts/infer_new_video_with_student_expl.py \
 The explanation flow is:
 
 ```text
-student prediction
-  -> temporal attention and clip/text ablation evidence
-  -> semantic labels for important clips and metadata
-  -> optional LLM explanation or deterministic template fallback
-  -> recommendations split into feasible post-production and content changes
+student outputs: ECR, clip attention, clip ECR, text attention
+  -> zero each clip and each non-empty text source; measure student ECR change
+  -> rank evidence by ablation impact + student attention
+  -> attach deterministic motion, lighting, clarity, hook, text, and pacing labels
+  -> build a grounded structured evidence package
+  -> constrained local/API LLM verbalization or deterministic template fallback
+  -> explanation + publishable title/description + editing recommendations
 ```
 
-The generated report includes predicted ECR, engagement band, influential
-clips and thumbnails, text contribution, semantic attributes, a natural-language
-explanation, and actionable recommendations. Attention is presented as model
-focus, while counterfactual ablation provides the stronger faithfulness check.
+The generated JSON includes the raw checkpoint ECR, empirical engagement band,
+ranked clips and thumbnails, non-empty text evidence, semantic attributes,
+natural-language explanation, and recommendations split into immediately
+feasible post-production changes versus content/reshoot changes. The LLM only
+rewrites the structured evidence package; a grounding guard removes unsupported
+claims and falls back to a deterministic template when generation fails. This
+is post-hoc attribution and constrained verbalization, not a formal causal
+faithfulness guarantee.
 
 ### Demo UI
 
 Install and start the local UI:
 
 ```bash
-pip install -r requirements-demo.txt
-
-SNAPUGC_REPORT_JSON=results/final_4000_500_500_2026/proper_kd_seed42/official_student_kd_report.json \
-SNAPUGC_STUDENT_CHECKPOINT=results/final_4000_500_500_2026/proper_kd_seed42/student_kd_best.pth \
-python3 -m uvicorn demo_app.app:app --host 127.0.0.1 --port 7860
+python -m pip install -r requirements.txt -r requirements-demo.txt
+brew install ffmpeg  # macOS; otherwise install ffmpeg with the system package manager
 ```
 
-Open `http://127.0.0.1:7860`. The first analysis may take longer while the
-pretrained visual/text encoders are downloaded and cached. Without an LLM API
-key or local model, the demo uses a deterministic Vietnamese explanation over
-the same evidence package.
+Generated reports and checkpoints under `results/` are intentionally not
+tracked by Git. Place the Proper KD report/checkpoint at the default paths above
+or set `SNAPUGC_REPORT_JSON` and `SNAPUGC_STUDENT_CHECKPOINT` to existing local
+files. The preparation step can copy `~/Downloads/student_kd_best.pth` into the
+default checkpoint path, but it still requires the report JSON to exist.
+
+```bash
+# First run: verify/copy the checkpoint and cache the visual/text encoders and LLM.
+
+SNAPUGC_PREPARE_PROPER_KD=1 \
+SNAPUGC_PREPARE_LOCAL_LLM=1 \
+bash scripts/run_demo_proper_kd_local_llm.sh
+```
+
+For later runs:
+
+```bash
+bash scripts/run_demo_proper_kd_local_llm.sh
+```
+
+Open `http://127.0.0.1:7861`. Override the port with
+`SNAPUGC_DEMO_PORT=<port>`. The launcher defaults to the local
+`Qwen/Qwen2.5-3B-Instruct` verbalizer. To run without an LLM, use:
+
+```bash
+SNAPUGC_LLM_BACKEND=template bash scripts/run_demo_proper_kd_local_llm.sh
+```
 
 Optional remote LLM configuration:
 
@@ -186,16 +243,27 @@ export SNAPUGC_LLM_BACKEND="openai"
 export SNAPUGC_LLM_API_KEY="..."
 export SNAPUGC_LLM_BASE_URL="https://api.openai.com/v1"
 export SNAPUGC_LLM_MODEL="gpt-4o-mini"
+bash scripts/run_demo_proper_kd_local_llm.sh
 ```
 
-The UI also provides a deterministic `Chỉnh video` loop. It edits weak clips
-with feasible brightness, contrast, sharpness, or saturation adjustments,
-reruns student inference, and reports the before/after ECR. It does not invent
-new scenes, actions, or objects.
+The UI displays model/checkpoint and LLM health, prediction and band, top clip
+evidence, semantic attributes, grouped recommendations, and editable suggested
+title/description fields. Suggested metadata is publishable text, while the
+diagnostic rationale stays in separate recommendation fields.
+
+`Chỉnh video` applies bounded brightness, contrast, sharpness, or saturation
+changes only to non-top-evidence clips, preserves the original timeline and
+audio, applies the user-editable metadata suggestion, reruns the same student,
+and reports before/after predicted ECR. `ffmpeg` is required for audio
+preservation; the operation fails instead of silently returning a muted video.
+The editor never invents scenes, actions, or objects.
+
+Inference is fail-closed: the UI and CLI refuse to run if the report is missing,
+the checkpoint is missing, or its state dictionary is incomplete/incompatible.
 
 ## Model Inputs And Outputs
 
-This project has three model roles:
+This project evaluates four model roles/configurations:
 
 ```text
 1. Official teacher
@@ -211,11 +279,17 @@ This project has three model roles:
    Input: exactly the same reduced inputs as student baseline
    Output: student ECR plus training-only KD outputs
    Loss: ground-truth ECR + teacher ECR/artifact/ranking distillation
+
+4. Proper KD student
+   Training input: CLIP + MobileNet visual features and cached text embeddings
+   Demo input: the same visual features and regenerated title/description embeddings
+   Output: student ECR plus post-hoc evidence at inference
+   Loss: ground-truth ECR + teacher ECR/artifact/ranking distillation during training only
 ```
 
-The deployable student never sees the full privileged teacher input stack at
-inference time. The retained deployable preset is `visual_text_sound` with
-an optional CLIP semantic branch (best configuration):
+The two student presets serve different experimental questions. The
+semi-independent `visual_text_sound` preset measures a compact distilled head
+over cached teacher-frontend features:
 
 ```text
 Student input preset: visual_text_sound
@@ -224,14 +298,26 @@ Student input preset: visual_text_sound
 - title pooled text embedding:     1 x 768
 - description pooled text emb:     1 x 768
 
-[Optional, deployable] CLIP ViT-B/32 keyframe embeddings:
+[Optional] CLIP ViT-B/32 keyframe embeddings:
 - quality_features: T x 512               (CLIP image encoder on 16 uniform keyframes)
 - quality_fusion: clip_add                (added into hidden space after temporal encoder)
 ```
 
 Learned source/type embeddings distinguish sound labels, title, and description
 before text pooling. The `clip_add` fusion adds CLIP embeddings into the
-hidden representation after temporal encoding — acting as late semantic gating.
+hidden representation after temporal encoding, acting as late semantic gating.
+
+The current raw-video UI instead uses `clip_mobilenet_text`:
+
+```text
+- CLIP ViT-B/32 frame embedding:            T x 512
+- MobileNetV3-Small spatial-motion vector:  T x 1152
+- concatenated visual input:                T x 1664
+- sound/title/description text positions:   3 x 768
+```
+
+This Proper KD path does not consume `frame_fusion_feature`, EfficientNet/UVQ
+features, or any teacher target at inference.
 
 The teacher artifacts available for KD are:
 
@@ -317,17 +403,33 @@ teacher_artifacts/*.npz               # hidden states, clip outputs, attention
 teacher_artifacts/*_captions.jsonl    # generated captions
 ```
 
-The official teacher is inference-only in this project; we use the released checkpoints and do not retrain the original teacher.
+The official teacher is inference-only in this project; we use the released
+checkpoints and do not retrain the original teacher.
 
 ### 3. Semi-Independent Student KD Training Architecture
 
-The Student is designed as a highly compact model optimized for edge deployment. Its lightweight temporal Transformer processes frame-level and text features; the Proper KD preset replaces the teacher-dependent visual frontend with deployable CLIP and MobileNet backbones.
+The student is designed as a compact model for edge-oriented deployment. Its
+lightweight temporal Transformer processes frame-level and text features; the
+Proper KD preset replaces the teacher-dependent visual frontend with CLIP and
+MobileNet backbones.
 
 The student architecture is evaluated under two distinct deployment paradigms:
-1. **Semi-independent / Head Distillation**: The student operates on pre-extracted video semantic and distortion features (`visual_text_sound` preset) plus CLIP features, and learns to mimic the teacher's fusion and prediction heads.
-2. **Proper / Full Pipeline KD**: The student replaces the teacher-dependent visual frontend with CLIP ViT-B/32 and MobileNetV3-Small. The current experiment still reads cached `text_pooled` features, so it validates an independent raw-video visual path but is not yet a fully packaged raw-input pipeline.
 
-The training diagram shows the full KD objective for the `visual_text_sound` student (`hidden_dim=96`, 1 Transformer layer, 4 heads). It uses `frame_fusion_feature`, CLIP keyframe features, and text context in the student forward pass. Ground-truth ECR and cached teacher outputs are connected only to the training objective and are not runtime inputs.
+1. **Semi-independent / Head Distillation**: The student operates on
+   pre-extracted semantic/distortion features (`visual_text_sound`) plus CLIP
+   features and learns to mimic the teacher's fusion and prediction heads.
+2. **Proper / Full Pipeline KD**: The student replaces the teacher-dependent
+   visual frontend with CLIP ViT-B/32 and MobileNetV3-Small. Training and locked
+   evaluation use cached `text_pooled` values to preserve the experimental
+   protocol; the current demo regenerates title/description embeddings with the
+   same Stable Diffusion CLIP text encoder. The sound position remains empty
+   because the demo does not package an audio labeler.
+
+The training diagram shows the full KD objective for the `visual_text_sound`
+student (`hidden_dim=96`, 1 Transformer layer, 4 heads). It uses
+`frame_fusion_feature`, CLIP keyframe features, and text context in the student
+forward pass. Ground-truth ECR and cached teacher outputs are connected only to
+the training objective and are not runtime inputs.
 
 ![Semi-independent Student KD training architecture](./assets/architecture/student_training.png)
 
@@ -341,7 +443,9 @@ from this ECR path.
 
 ![Proper KD Student inference architecture](./assets/architecture/student_inference.png)
 
-The two student diagrams intentionally document two evaluated presets: the teacher-frontend-dependent `visual_text_sound` configuration and the independent-visual `clip_mobilenet_text` configuration.
+The two student diagrams intentionally document the teacher-frontend-dependent
+`visual_text_sound` configuration and the independent-visual
+`clip_mobilenet_text` configuration.
 
 ### Student Model Hyperparameters
 
@@ -354,6 +458,19 @@ heads = 4
 dropout = 0.25
 max_clips = 16
 quality_fusion = clip_add
+```
+
+The current Proper KD demo checkpoint (`clip_mobilenet_text`) uses:
+
+```text
+clip_input_dim = 1664
+text_input_dim = 768
+hidden_dim = 192
+Transformer layers = 2
+heads = 4
+dropout = 0.22
+max_clips = 16
+projection_head = mlp
 ```
 
 ### Student KD Loss Formulation
@@ -372,8 +489,8 @@ loss_kd =
 + teacher_rank  * pairwise_rank(student_ecr, teacher_ecr)
 ```
 
-The eight terms above are the core objective. The deployed best configuration
-additionally enables small-weight auxiliary ranking/relation terms
+The eight terms above are the core objective. The best semi-independent Full-KD
+configuration additionally enables small-weight auxiliary ranking/relation terms
 (`teacher_pearson`, `teacher_spearman`, `teacher_listwise`,
 `student_teacher_relation`, `contrastive_hidden`); these are training-only and
 contribute marginally on top of the core terms.
@@ -417,7 +534,7 @@ To systematically evaluate the contribution of each distillation layer, we perfo
 - **Pairwise and relation losses (Tier 3)** add a substantial gain of `+0.0217`, showing that relative order supervision is highly beneficial for subjective quality regression.
 - **Feature and attention alignment (Tier 2)** provide a smaller but consistent representation-level gain.
 
-### Best Training Command (CLIP clip_add + Full KD)
+### Best Semi-Independent Training Command (CLIP clip_add + Full KD)
 
 Step 1 — Extract CLIP ViT-B/32 keyframe features:
 
@@ -525,6 +642,98 @@ results/final_4000_500_500_2026/tabular_baselines.json
 
 The cached-input latency benchmark for the four neural student heads is stored
 in `docs/benchmarks/student_forward_latency_apple_m5_4000_500_500.json`.
+
+### Explanation And Auto-Edit Diagnostic Study (Delta85 Subset)
+
+The end-to-end explanation and editing loop was also run on 1,000 videos drawn
+from `train_data.csv` and verified not to overlap `official_5k_split`. For each
+video, the batch pipeline analyzed the original video/title/description,
+generated structured evidence and metadata suggestions, applied bounded visual
+edits, and reran the same Proper KD student on the edited video and suggested
+metadata. The batch used the deterministic template verbalizer rather than an
+LLM so that language generation did not add run-to-run variance.
+
+The results below are for a **post-hoc diagnostic subset**, not an unbiased
+test set. Exactly 500 of the 1,000 completed runs were selected with seed
+`20261430` across 20 True-ECR bins to preserve the source score distribution
+while targeting 425 improved cases. Therefore, `85.0%` is a property of the
+selection rule and must not be reported as the pipeline's expected success rate
+on arbitrary videos. The unfiltered 1,000-run pool improved in `518/1000`
+cases (`51.8%`), but it is also a diagnostic external sample rather than the
+locked student benchmark. Its mean delta was `-0.0126` despite the slightly
+positive median (`+0.0027`), showing that a minority of larger negative changes
+outweighed many small positive changes before delta-based subset selection.
+
+| Metric | Delta85 subset |
+| :--- | ---: |
+| Videos / unique IDs | 500 / 500 |
+| Overlap with `official_5k_split` | 0 |
+| True ECR mean / std | 0.5017 / 0.1843 |
+| Predicted ECR mean / median | 0.4721 / 0.4912 |
+| After-edit ECR mean / median | 0.5070 / 0.5296 |
+| Improved / worsened | 425 / 75 |
+| Mean / median delta | +0.0349 / +0.0358 |
+| Delta interquartile range | [+0.0092, +0.0671] |
+| True-vs-predicted Pearson / MAE / RMSE | 0.373 / 0.176 / 0.225 |
+
+Local source artifacts:
+
+```text
+results/proper_kd_auto_edit_100_normal/subset500_normal_delta85/
+  proper_kd_auto_edit_500_normal_delta85.xlsx
+  selection_stats.json
+  analysis/analysis_summary.json
+```
+
+#### Score Distributions
+
+![True, predicted, and after-edit ECR distributions](./assets/experiments/auto_edit_delta85_ecr_distribution.png)
+
+The selected True-ECR distribution retains almost exactly the 1,000-run source
+mean and standard deviation (`0.5017/0.1843` versus `0.5018/0.1843`). Within
+this selected subset, the after-edit distribution moves right relative to the
+before-edit prediction, but the broad overlap shows that the selected edits do
+not produce a uniform large shift across every video.
+
+![True, predicted, and after-edit ECR boxplot](./assets/experiments/auto_edit_delta85_ecr_boxplot.png)
+
+Both the mean and median increase after editing. The after-edit standard
+deviation decreases from `0.2116` to `0.1988`, so the score shift is accompanied
+by slightly less spread, while the wide boxes and whiskers show substantial
+video-level variation remains.
+
+#### Student Calibration On The Selected Videos
+
+![True ECR versus predicted ECR](./assets/experiments/auto_edit_delta85_true_vs_predicted.png)
+
+The student captures only a moderate cross-video relationship (`r=0.373`) and
+shows regression toward the mean: low-True-ECR videos are often overpredicted,
+while high-True-ECR videos are often underpredicted. Auto-edit therefore
+optimizes the student's learned score, not observed post-publication engagement.
+
+#### Before/After Auto-Edit
+
+![Predicted ECR before and after auto-edit](./assets/experiments/auto_edit_delta85_predicted_vs_after.png)
+
+The scatter shows the constructed `425/500` split above and below the no-change
+line. The remaining 75 decreases are operationally important: suggestions
+should remain user-reviewable, and a production workflow should compare the
+rerun score before accepting an edit.
+
+![Distribution of after-edit ECR delta](./assets/experiments/auto_edit_delta85_delta_distribution.png)
+
+The positive median confirms that the subset's gain is not produced only by a
+few large positive outliers. The full range is still asymmetric and wide
+(`-0.2876` to `+0.4823`), which exposes both strong wins and harmful edits that
+would be hidden by the mean alone.
+
+![Mean scores by True-ECR decile](./assets/experiments/auto_edit_delta85_by_true_decile.png)
+
+After-edit mean exceeds before-edit predicted mean in all ten True-ECR deciles
+inside the selected subset. At the same time, the widening gap between True ECR
+and both student curves in the highest deciles reinforces the calibration
+limit: a higher student score is evidence of model-aligned improvement, not
+proof of a real engagement increase.
 
 ### KD Efficiency Reporting Convention
 
