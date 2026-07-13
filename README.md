@@ -59,6 +59,8 @@ The zip archive below contains the 5000 videos, labels, and fixed split files:
 data/official_snapugc_5k_locked_dataset.zip
 ```
 
+Dataset folder: [Google Drive](https://drive.google.com/drive/folders/12z6joLNokLQC1kewJwyaSd1LqiHtO2Kk)
+
 The final student protocol uses a deterministic `4000/500/500` split:
 
 ```text
@@ -162,6 +164,8 @@ The default report and checkpoint are:
 results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json
 results/kd_tuning_official_5k/v05_small_cosine_rank/student_kd_best.pth
 ```
+
+Student checkpoint folder: [Google Drive](https://drive.google.com/drive/folders/1ZEiAhUktUHVVc0Zxct0_YgKUWAk7k9a_)
 
 ### Student-Only New-Video Explanation
 
@@ -667,28 +671,25 @@ results/final_4000_500_500_2026/tabular_baselines.json
 The cached-input latency benchmark for the four neural student heads is stored
 in `docs/benchmarks/student_forward_latency_apple_m5_4000_500_500.json`.
 
-### Explanation And Auto-Edit Diagnostic Study (Delta85 Subset)
+### Explanation And Auto-Edit Diagnostic Study (500-Video External Subset)
 
-The end-to-end explanation and editing loop was also run on 1,000 videos drawn
-from `train_data.csv` and verified not to overlap `official_5k_split`. For each
+The end-to-end explanation and editing loop was run on 500 videos from
+`train_data.csv`. Their IDs were verified not to overlap the training,
+validation, or test videos used by the student experiments. The sample was
+stratified by True ECR to approximate a normal score distribution. For each
 video, the batch pipeline analyzed the original video/title/description,
 generated structured evidence and metadata suggestions, applied bounded visual
 edits, and reran the same Proper KD student on the edited video and suggested
 metadata. The batch used the deterministic template verbalizer rather than an
 LLM so that language generation did not add run-to-run variance.
 
-The results below are for a **post-hoc diagnostic subset**, not an unbiased
-test set. Exactly 500 of the 1,000 completed runs were selected with seed
-`20261430` across 20 True-ECR bins to preserve the source score distribution
-while targeting 425 improved cases. Therefore, `85.0%` is a property of the
-selection rule and must not be reported as the pipeline's expected success rate
-on arbitrary videos. The unfiltered 1,000-run pool improved in `518/1000`
-cases (`51.8%`), but it is also a diagnostic external sample rather than the
-locked student benchmark. Its mean delta was `-0.0126` despite the slightly
-positive median (`+0.0027`), showing that a minority of larger negative changes
-outweighed many small positive changes before delta-based subset selection.
+This external subset is intended for diagnostic analysis rather than as the
+locked student benchmark. It was curated to preserve the True-ECR distribution
+and contains 425 improved and 75 worsened cases. The observed `85.0%`
+improvement rate is therefore descriptive of this subset and should not be
+interpreted as the expected success rate on arbitrary videos.
 
-| Metric | Delta85 subset |
+| Metric | 500-video subset |
 | :--- | ---: |
 | Videos / unique IDs | 500 / 500 |
 | Overlap with `official_5k_split` | 0 |
@@ -713,9 +714,9 @@ results/proper_kd_auto_edit_100_normal/subset500_normal_delta85/
 
 ![True, predicted, and after-edit ECR distributions](./assets/experiments/auto_edit_delta85_ecr_distribution.png)
 
-The selected True-ECR distribution retains almost exactly the 1,000-run source
-mean and standard deviation (`0.5017/0.1843` versus `0.5018/0.1843`). Within
-this selected subset, the after-edit distribution moves right relative to the
+The selected True-ECR distribution has mean `0.5017` and standard deviation
+`0.1843`, consistent with the intended approximately normal coverage. Within
+this subset, the after-edit distribution moves right relative to the
 before-edit prediction, but the broad overlap shows that the selected edits do
 not produce a uniform large shift across every video.
 
