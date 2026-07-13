@@ -61,6 +61,8 @@ data/official_snapugc_5k_locked_dataset.zip
 
 Dataset 5k and student checkpoint folder: [Google Drive](https://drive.google.com/drive/folders/1cwknHCOV5NTM1QhCx-QLv7LwDOZnkaHA)
 
+Student-training artifacts (precomputed teacher targets and feature caches): [Google Drive](https://drive.google.com/drive/folders/1eYkGtT1Vi6sQintNkEXi0xgAKZEWxXRu?usp=drive_link)
+
 The final student protocol uses a deterministic `4000/500/500` split:
 
 ```text
@@ -82,6 +84,21 @@ data/official_5k_split_4000_500_500/manifest.json
 Teacher artifacts were precomputed independently for all 5000 videos. The
 locked test is held out only from student training and model selection; it is
 not teacher-held-out or cross-domain.
+
+To retrain a student without rerunning the teacher, download the artifact
+folder and place its contents at these paths:
+
+```text
+results/original_snapugc_official_balanced_5000_artifacts_g2_32/teacher_artifacts/
+results/clip_vitb32_keyframe_features_5000.npz
+results/lite_action_features_5000.npz
+data/train_subset_balanced_5000.csv
+```
+
+The artifact folder is required for all student training. The CLIP cache is
+required for the semi-independent Full KD preset, while the MobileNet cache is
+also required for Proper KD. Raw videos and teacher checkpoints are not needed
+when training from these precomputed artifacts.
 
 ### Dataset Visualizations
 
@@ -574,40 +591,25 @@ The grouped cumulative validation ablation below uses the `visual_text_sound` pr
 - **Pairwise and relation losses (Tier 3)** add a substantial gain of `+0.0217`, showing that relative order supervision is highly beneficial for subjective quality regression.
 - **Feature and attention alignment (Tier 2)** provide a smaller but consistent representation-level gain.
 
-### Best Semi-Independent Training Command (CLIP clip_add + Full KD)
+### Train Student From Precomputed Artifacts
 
-Step 1 — Extract CLIP ViT-B/32 keyframe features:
-
-```bash
-python scripts/extract_clip_keyframe_features.py \
-  --tar results/videos_5000.tar \
-  --labels-csv data/train_subset_balanced_5000.csv \
-  --out results/clip_vitb32_keyframe_features_5000.npz \
-  --model ViT-B-32 --pretrained openai \
-  --n-frames 16 --device mps
-```
-
-Step 2 — Train the student:
+After downloading the artifact paths above, run the reproducible
+semi-independent Full KD configuration on the fixed 4,000/500 split:
 
 ```bash
-python scripts/train_official_student_kd.py \
-  --artifact-dir results/original_snapugc_official_balanced_5000_artifacts_g2_32/teacher_artifacts \
-  --labels-csv data/train_subset_balanced_5000.csv \
-  --save-dir results/kd_tuning_official_5k/student_kd_full_clipadd \
-  --input-preset visual_text_sound \
-  --quality-features results/clip_vitb32_keyframe_features_5000.npz \
-  --quality-fusion clip_add \
-  --hidden-dim 96 --layers 1 --heads 4 \
-  --dropout 0.25 --epochs 100 --batch 32 --eval-batch 128 \
-  --lr 5e-4 --weight-decay 0.02 \
-  --val-ratio 0.2 --seed 42 --device mps --run-kind kd \
-  --soft-weight 1.1 --clip-weight 0.08 \
-  --temporal-weight 0.02 --fusion-weight 0.02 --attention-weight 0.005 \
-  --hard-rank-weight 0.04 \
-  --teacher-rank-weight 0.18 --teacher-pearson-weight 0.02 \
-  --teacher-spearman-weight 0.015 --teacher-listwise-weight 0.02 \
-  --student-teacher-relation-weight 0.02 --contrastive-hidden-weight 0.02
+DEVICE=mps bash scripts/run_student_training.sh
 ```
+
+Use `DEVICE=cuda` on NVIDIA GPUs or `DEVICE=cpu` when no accelerator is
+available. To train the teacher-free Proper KD configuration instead, which
+also needs `lite_action_features_5000.npz`, run:
+
+```bash
+MODE=proper DEVICE=mps bash scripts/run_student_training.sh
+```
+
+Training outputs are saved under `results/student_training/` and the locked
+500-video test IDs remain excluded from training and checkpoint selection.
 
 See [student_kd_architecture.md](./docs/student_kd_architecture.md) for more details.
 
