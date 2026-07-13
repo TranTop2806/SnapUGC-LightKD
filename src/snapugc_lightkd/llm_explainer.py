@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from functools import lru_cache
@@ -17,6 +18,8 @@ from typing import Any
 
 
 DEFAULT_LOCAL_LLM_MODEL = "Qwen/Qwen2.5-3B-Instruct"
+DEFAULT_LOCAL_LLM_MAX_NEW_TOKENS = 800
+DEFAULT_LOCAL_LLM_RETRY_TOKENS = 1200
 
 
 def build_semantic_llm_input(
@@ -156,12 +159,16 @@ def generate_semantic_explanation(
         row = json.loads(raw)
         content = row["choices"][0]["message"]["content"]
         parsed = _parse_json_object(content)
-        return _normalize_llm_output(
-            parsed,
-            provider="openai_compatible",
-            model=model,
-            used_llm=True,
-            fallback_reason=None,
+        return _apply_grounding_guard(
+            _normalize_llm_output(
+                parsed,
+                provider="openai_compatible",
+                model=model,
+                used_llm=True,
+                fallback_reason=None,
+            ),
+            payload=payload,
+            language=language,
         )
     except (KeyError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, OSError) as exc:
         return template_semantic_explanation(
@@ -177,7 +184,6 @@ def generate_local_transformers_explanation(
     language: str = "vi",
 ) -> dict[str, Any]:
     model_id = os.environ.get("SNAPUGC_LOCAL_LLM_MODEL", DEFAULT_LOCAL_LLM_MODEL)
-    max_new_tokens = int(os.environ.get("SNAPUGC_LOCAL_LLM_MAX_NEW_TOKENS", "420"))
     try:
         tokenizer, model = _load_local_transformers_model(model_id)
         messages = [
@@ -202,25 +208,26 @@ def generate_local_transformers_explanation(
         import torch
 
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-        with torch.no_grad():
-            output = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                temperature=None,
-                top_p=None,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-        generated = output[0][inputs["input_ids"].shape[-1] :]
-        content = tokenizer.decode(generated, skip_special_tokens=True)
-        parsed = _parse_json_object(content)
-        return _normalize_llm_output(
-            parsed,
-            provider="local_transformers",
-            model=model_id,
-            used_llm=True,
-            fallback_reason=None,
+        parsed, attempts, token_budget = _generate_local_json(
+            tokenizer=tokenizer,
+            model=model,
+            inputs=inputs,
+            torch_module=torch,
         )
+        result = _apply_grounding_guard(
+            _normalize_llm_output(
+                parsed,
+                provider="local_transformers",
+                model=model_id,
+                used_llm=True,
+                fallback_reason=None,
+            ),
+            payload=payload,
+            language=language,
+        )
+        result["llm"]["generation_attempts"] = attempts
+        result["llm"]["max_new_tokens_used"] = token_budget
+        return result
     except Exception as exc:
         return template_semantic_explanation(
             payload,
@@ -298,17 +305,82 @@ def _prompt(payload: dict[str, Any], *, language: str) -> str:
             "Write entirely in Vietnamese. Do not use English section labels. "
             "Translate technical labels into natural Vietnamese when possible."
         )
+    grounded = template_semantic_explanation(payload, language=language)
+    grounded_draft = {
+        "summary": grounded["summary"],
+        "claims": grounded["claims"],
+        "top_evidence_rationales": grounded["top_evidence_rationales"],
+        "recommendations": payload.get("recommendations", []),
+    }
     return (
         f"{language_instruction}\n"
         "Return a JSON object with keys: summary, claims, top_evidence_rationales, recommendations.\n"
         "Use valid JSON with double quotes only. Do not wrap the JSON in Markdown.\n"
-        "- summary: one short paragraph for a normal user.\n"
-        "- claims: 3-5 grounded bullet-like strings.\n"
-        "- top_evidence_rationales: explain why the selected clips/text streams matter. Group similar clips.\n"
-        "- recommendations: reuse or lightly rewrite supplied recommendations.\n\n"
+        "Keep the whole response concise enough to finish the JSON.\n"
+        "- summary: at most two short sentences and must preserve the ECR score and band.\n"
+        "- claims: 2-4 short strings based only on supplied evidence.\n"
+        "- top_evidence_rationales: 1-3 short strings; group clips with similar labels.\n"
+        "- recommendations: copy the supplied recommendations verbatim; do not add new advice.\n"
+        "Do not claim actual audience reactions, virality, causality, or unseen events.\n"
+        "Do not negate a strong/balanced attribute that appears in the evidence.\n\n"
+        "Grounded draft to preserve and lightly rewrite:\n"
+        f"{json.dumps(grounded_draft, ensure_ascii=False, indent=2)}\n\n"
         "Evidence JSON:\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
+
+
+def _generate_local_json(
+    *,
+    tokenizer: Any,
+    model: Any,
+    inputs: Any,
+    torch_module: Any,
+) -> tuple[dict[str, Any], int, int]:
+    """Generate parseable JSON, retrying once when the first output is truncated."""
+
+    last_error: Exception | None = None
+    for attempt, token_budget in enumerate(_local_generation_token_budgets(), start=1):
+        with torch_module.no_grad():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=token_budget,
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        generated = output[0][inputs["input_ids"].shape[-1] :]
+        content = tokenizer.decode(generated, skip_special_tokens=True)
+        try:
+            return _parse_json_object(content), attempt, token_budget
+        except (json.JSONDecodeError, SyntaxError, ValueError) as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No local LLM generation budget configured")
+
+
+def _local_generation_token_budgets() -> list[int]:
+    initial = max(
+        128,
+        int(
+            os.environ.get(
+                "SNAPUGC_LOCAL_LLM_MAX_NEW_TOKENS",
+                str(DEFAULT_LOCAL_LLM_MAX_NEW_TOKENS),
+            )
+        ),
+    )
+    retry = max(
+        initial,
+        int(
+            os.environ.get(
+                "SNAPUGC_LOCAL_LLM_RETRY_TOKENS",
+                str(max(DEFAULT_LOCAL_LLM_RETRY_TOKENS, initial + 400)),
+            )
+        ),
+    )
+    return [initial] if retry == initial else [initial, retry]
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
@@ -365,6 +437,113 @@ def _normalize_llm_output(
             "fallback_reason": fallback_reason,
         },
     }
+
+
+def _apply_grounding_guard(
+    result: dict[str, Any],
+    *,
+    payload: dict[str, Any],
+    language: str,
+) -> dict[str, Any]:
+    """Keep LLM prose while anchoring critical claims to deterministic evidence."""
+
+    fallback = template_semantic_explanation(payload, language=language)
+    fallback_summary = fallback["summary"]
+    discarded = 0
+
+    generated_summary = str(result.get("summary") or "").strip()
+    if generated_summary and _grounding_rejection_reason(generated_summary, payload) is None:
+        if generated_summary == fallback_summary or "ecr" in generated_summary.lower():
+            summary = generated_summary
+        else:
+            summary = f"{fallback_summary} {generated_summary}"
+    else:
+        summary = fallback_summary
+        discarded += int(bool(generated_summary))
+
+    claims = [fallback_summary]
+    for claim in _string_list(result.get("claims")):
+        if _grounding_rejection_reason(claim, payload) is not None:
+            discarded += 1
+            continue
+        if claim not in claims:
+            claims.append(claim)
+        if len(claims) >= 4:
+            break
+    for claim in fallback["claims"][1:]:
+        if claim not in claims and len(claims) < 4:
+            claims.append(claim)
+
+    rationales = []
+    for rationale in _string_list(result.get("top_evidence_rationales")):
+        if _grounding_rejection_reason(rationale, payload) is not None:
+            discarded += 1
+            continue
+        if rationale not in rationales:
+            rationales.append(rationale)
+        if len(rationales) >= 3:
+            break
+    if not rationales:
+        rationales = list(fallback["top_evidence_rationales"])
+
+    supplied_recommendations = _string_list(payload.get("recommendations"))
+    generated_recommendations = _string_list(result.get("recommendations"))
+    if generated_recommendations != supplied_recommendations:
+        discarded += len(generated_recommendations)
+
+    result["summary"] = summary
+    result["claims"] = claims
+    result["top_evidence_rationales"] = rationales
+    result["recommendations"] = supplied_recommendations
+    result["llm"]["grounding_guard_applied"] = True
+    result["llm"]["discarded_items"] = discarded
+    return result
+
+
+def _grounding_rejection_reason(text: str, payload: dict[str, Any]) -> str | None:
+    lowered = " ".join(text.lower().split())
+    unsupported_phrases = (
+        "khán giả",
+        "thu hút người xem",
+        "giữ sự chú ý",
+        "sẽ tăng ecr",
+        "viral",
+        "audience reaction",
+        "attract viewers",
+        "hold attention",
+        "will increase ecr",
+        "guarantee",
+    )
+    if any(phrase in lowered for phrase in unsupported_phrases):
+        return "unsupported_audience_or_causal_claim"
+
+    allowed_clip_indices = {
+        int(row["clip_index"])
+        for row in payload.get("top_clips", [])
+        if row.get("clip_index") is not None
+    }
+    for match in re.finditer(r"\bclip(?:\s+số)?\s*#?\s*(\d+)\b", lowered):
+        if int(match.group(1)) not in allowed_clip_indices:
+            return "unknown_clip_reference"
+
+    if _payload_has_attribute(payload, name="motion", label="strong"):
+        contradiction_patterns = (
+            r"không có[^.]{0,60}chuyển động mạnh",
+            r"không[^.]{0,40}clip[^.]{0,40}chuyển động mạnh",
+            r"no[^.]{0,40}strong motion",
+        )
+        if any(re.search(pattern, lowered) for pattern in contradiction_patterns):
+            return "contradicts_strong_motion_evidence"
+    return None
+
+
+def _payload_has_attribute(payload: dict[str, Any], *, name: str, label: str) -> bool:
+    for clip in payload.get("top_clips", []):
+        profile = clip.get("semantic_profile") or {}
+        for attribute in profile.get("attributes", []):
+            if attribute.get("name") == name and attribute.get("label") == label:
+                return True
+    return False
 
 
 @lru_cache(maxsize=2)
