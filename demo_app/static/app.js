@@ -73,7 +73,7 @@ form.addEventListener("submit", async (event) => {
 fetch("/health")
   .then((res) => res.json())
   .then((data) => {
-    const model = data.checkpoint ? "Checkpoint loaded" : "Demo fallback";
+    const model = data.model_ready ? "Checkpoint loaded" : "Checkpoint missing";
     const llm =
       data.llm_backend === "local" ? "Local LLM" : data.llm_backend === "api" ? "API LLM" : "Template";
     health.textContent = `${model} · ${llm}`;

@@ -67,12 +67,16 @@ def health() -> dict[str, object]:
     has_local_llm = llm_backend.lower() in {"local", "transformers", "hf"} or bool(
         os.environ.get("SNAPUGC_LOCAL_LLM_MODEL")
     )
+    report_path = resolve_report_path()
+    checkpoint_path = resolve_checkpoint_path(report_path)
+    efficientnet_path = resolve_efficientnet_path()
     return {
         "ok": True,
         "root": str(ROOT),
-        "report_json": str(resolve_report_path()),
-        "checkpoint": str(resolve_checkpoint_path(resolve_report_path())),
-        "efficientnet_weights": str(resolve_efficientnet_path()),
+        "model_ready": bool(report_path and checkpoint_path),
+        "report_json": str(report_path) if report_path else None,
+        "checkpoint": str(checkpoint_path) if checkpoint_path else None,
+        "efficientnet_weights": str(efficientnet_path) if efficientnet_path else None,
         "student_input_preset": os.environ.get("SNAPUGC_STUDENT_INPUT_PRESET", "auto"),
         "text_encoder_model": os.environ.get("SNAPUGC_TEXT_ENCODER_MODEL", "CompVis/stable-diffusion-v1-4"),
         "llm_explainer": has_api_llm or has_local_llm,
@@ -208,6 +212,22 @@ def run_student_inference(
 ) -> dict[str, object]:
     report_path = resolve_report_path()
     checkpoint_path = resolve_checkpoint_path(report_path)
+    if report_path is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Proper KD report JSON is missing. Set SNAPUGC_REPORT_JSON to "
+                "official_student_kd_report.json."
+            ),
+        )
+    if checkpoint_path is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Proper KD student checkpoint is missing. Set SNAPUGC_STUDENT_CHECKPOINT "
+                "to student_kd_best.pth."
+            ),
+        )
     labels_path = resolve_labels_path()
     efficientnet_path = resolve_efficientnet_path()
     assets_dir.mkdir(parents=True, exist_ok=True)
@@ -229,10 +249,8 @@ def run_student_inference(
         "--assets-dir",
         str(assets_dir),
     ]
-    if report_path:
-        cmd.extend(["--report-json", str(report_path)])
-    if checkpoint_path:
-        cmd.extend(["--checkpoint", str(checkpoint_path)])
+    cmd.extend(["--report-json", str(report_path)])
+    cmd.extend(["--checkpoint", str(checkpoint_path)])
     if labels_path:
         cmd.extend(["--labels-csv", str(labels_path)])
     if efficientnet_path:

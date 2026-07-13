@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -56,7 +55,9 @@ class ProperKDAnalyzer:
         text_encoder_model: str,
     ) -> None:
         self.device = infer.resolve_device(device)
-        self.report_path = infer.resolve_report_path(str(report_json) if report_json else None)
+        self.report_path = infer.require_report_path(
+            infer.resolve_report_path(str(report_json) if report_json else None)
+        )
         self.report = infer.load_report(self.report_path)
         self.model_kwargs = dict(
             self.report.get(
@@ -85,18 +86,15 @@ class ProperKDAnalyzer:
         self.topk = topk
 
         self.model = OfficialArtifactStudent(**self.model_kwargs).to(self.device)
-        self.checkpoint_path = infer.resolve_checkpoint_path(
-            str(checkpoint) if checkpoint else None,
-            self.report_path,
+        self.checkpoint_path = infer.require_checkpoint_path(
+            infer.resolve_checkpoint_path(
+                str(checkpoint) if checkpoint else None,
+                self.report_path,
+            )
         )
-        self.checkpoint_loaded = (
-            infer.load_checkpoint(self.model, self.checkpoint_path, self.device)
-            if self.checkpoint_path
-            else False
-        )
+        infer.load_required_checkpoint(self.model, self.checkpoint_path, self.device)
+        self.checkpoint_loaded = True
         self.model.eval()
-        if not self.checkpoint_loaded:
-            raise RuntimeError(f"Could not load student checkpoint: {self.checkpoint_path}")
 
     def analyze(self, video_path: Path, *, title: str, description: str, video_id: str) -> dict[str, Any]:
         native = infer.build_native_student_inputs(

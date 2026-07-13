@@ -49,6 +49,37 @@ def load_checkpoint(model: torch.nn.Module, checkpoint: Path, device: torch.devi
     return len(unexpected) == 0 and len(missing) == 0
 
 
+def require_report_path(path: Path | None) -> Path:
+    if path is None or not path.exists():
+        raise FileNotFoundError(
+            "Proper KD report JSON was not found. Set --report-json or "
+            "SNAPUGC_REPORT_JSON to official_student_kd_report.json."
+        )
+    return path
+
+
+def require_checkpoint_path(path: Path | None) -> Path:
+    if path is None or not path.exists():
+        raise FileNotFoundError(
+            "Proper KD student checkpoint was not found. Set --checkpoint or "
+            "SNAPUGC_STUDENT_CHECKPOINT to student_kd_best.pth."
+        )
+    return path
+
+
+def load_required_checkpoint(
+    model: torch.nn.Module,
+    checkpoint: Path | None,
+    device: torch.device,
+) -> Path:
+    checkpoint = require_checkpoint_path(checkpoint)
+    if not load_checkpoint(model, checkpoint, device):
+        raise RuntimeError(
+            f"Student checkpoint is incomplete or incompatible with the report: {checkpoint}"
+        )
+    return checkpoint
+
+
 def load_report(path: Path | None) -> dict:
     if path is None or not path.exists():
         return {}
@@ -101,8 +132,9 @@ def main() -> None:
     args = parser.parse_args()
 
     device = resolve_device(args.device)
-    report_path = resolve_report_path(args.report_json)
+    report_path = require_report_path(resolve_report_path(args.report_json))
     report = load_report(report_path)
+    ckpt_path = require_checkpoint_path(resolve_checkpoint_path(args.checkpoint, report_path))
     model_kwargs = dict(
         report.get(
             "model_kwargs",
@@ -138,8 +170,8 @@ def main() -> None:
     batch = move_batch(native.as_batch(), device)
 
     model = OfficialArtifactStudent(**model_kwargs).to(device)
-    ckpt_path = resolve_checkpoint_path(args.checkpoint, report_path)
-    checkpoint_loaded = load_checkpoint(model, ckpt_path, device) if ckpt_path else False
+    load_required_checkpoint(model, ckpt_path, device)
+    checkpoint_loaded = True
     model.eval()
     with torch.no_grad():
         outputs = model(

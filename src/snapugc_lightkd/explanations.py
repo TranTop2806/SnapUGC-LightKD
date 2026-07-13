@@ -245,13 +245,16 @@ def explain_student_prediction(
     }
     for idx, weight in enumerate(text_attention):
         stream = stream_names[idx] if idx < len(stream_names) else f"text_{idx}"
+        source_text = clean_text(text_sources.get(stream))
+        if source_text is None:
+            continue
         ablated = predict_with_zeroed_evidence(model, batch, zero_text_indices={idx})
         contribution = student_ecr - ablated
         text_rows.append(
             {
                 "stream": stream,
                 "attention": float(weight),
-                "source_text": text_sources.get(stream),
+                "source_text": source_text,
                 "ablated_ecr_zero_text": float(ablated),
                 "contribution_to_score": float(contribution),
                 "direction": _direction_label(contribution),

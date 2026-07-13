@@ -127,9 +127,15 @@ def apply_feasible_video_edits(
         }
 
     temp_video = output_video.with_name(output_video.stem + ".silent.mp4")
-    _write_edited_silent_video(input_video=input_video, output_video=temp_video, edits=edits)
-    _mux_original_audio(video_without_audio=temp_video, original_video=input_video, output_video=output_video)
-    temp_video.unlink(missing_ok=True)
+    try:
+        _write_edited_silent_video(input_video=input_video, output_video=temp_video, edits=edits)
+        _mux_original_audio(
+            video_without_audio=temp_video,
+            original_video=input_video,
+            output_video=output_video,
+        )
+    finally:
+        temp_video.unlink(missing_ok=True)
     sidecar = output_video.with_suffix(".edit_plan.json")
     sidecar.write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return {
@@ -228,7 +234,7 @@ def _operations_for_frame(index: int, ranges: list[tuple[int, int, dict[str, flo
 def _apply_operations(frame: np.ndarray, operations: dict[str, float]) -> np.ndarray:
     alpha = float(operations.get("contrast", 1.0))
     beta = float(operations.get("brightness", 0.0))
-    out = cv2.convertScaleAbs(frame, alpha=alpha, beta=beta)
+    out = np.clip(frame.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
     saturation = operations.get("saturation")
     if saturation and abs(float(saturation) - 1.0) > 1e-3:
         hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV).astype(np.float32)
@@ -244,8 +250,7 @@ def _apply_operations(frame: np.ndarray, operations: dict[str, float]) -> np.nda
 def _mux_original_audio(*, video_without_audio: Path, original_video: Path, output_video: Path) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
-        shutil.copy2(video_without_audio, output_video)
-        return
+        raise RuntimeError("ffmpeg is required to preserve the original audio during auto-edit")
     cmd = [
         ffmpeg,
         "-y",
@@ -272,8 +277,10 @@ def _mux_original_audio(*, video_without_audio: Path, original_video: Path, outp
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError:
-        shutil.copy2(video_without_audio, output_video)
+    except subprocess.CalledProcessError as exc:
+        output_video.unlink(missing_ok=True)
+        detail = (exc.stderr or exc.stdout or "unknown ffmpeg error").strip()[-1000:]
+        raise RuntimeError(f"ffmpeg could not preserve the original audio: {detail}") from exc
 
 
 def _clip_edit_to_dict(item: ClipEdit) -> dict[str, Any]:
