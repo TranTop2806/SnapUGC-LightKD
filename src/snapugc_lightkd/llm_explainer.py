@@ -7,12 +7,14 @@ student-only and offline-capable.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import urllib.error
 import urllib.request
 from functools import lru_cache
 from typing import Any
+
 
 DEFAULT_LOCAL_LLM_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 
@@ -299,6 +301,7 @@ def _prompt(payload: dict[str, Any], *, language: str) -> str:
     return (
         f"{language_instruction}\n"
         "Return a JSON object with keys: summary, claims, top_evidence_rationales, recommendations.\n"
+        "Use valid JSON with double quotes only. Do not wrap the JSON in Markdown.\n"
         "- summary: one short paragraph for a normal user.\n"
         "- claims: 3-5 grounded bullet-like strings.\n"
         "- top_evidence_rationales: explain why the selected clips/text streams matter. Group similar clips.\n"
@@ -313,14 +316,26 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     if text.startswith("```"):
         text = text.strip("`")
         text = text.removeprefix("json").strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(text[start : end + 1])
-        raise
+    candidates = [text]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start : end + 1])
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+        try:
+            value = ast.literal_eval(candidate)
+            if isinstance(value, dict):
+                return value
+        except (SyntaxError, ValueError) as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise json.JSONDecodeError("No JSON object found", text, 0)
 
 
 def _normalize_llm_output(

@@ -80,6 +80,16 @@ def main() -> None:
     parser.add_argument("--max-clips", type=int, default=None)
     parser.add_argument("--efficientnet-weights", default=None)
     parser.add_argument("--no-visual-encoder", action="store_true")
+    parser.add_argument(
+        "--input-preset",
+        default=os.environ.get("SNAPUGC_STUDENT_INPUT_PRESET"),
+        help="Native input builder preset. Use clip_mobilenet_text for Proper KD.",
+    )
+    parser.add_argument(
+        "--text-encoder-model",
+        default=os.environ.get("SNAPUGC_TEXT_ENCODER_MODEL", "CompVis/stable-diffusion-v1-4"),
+        help="Stable-Diffusion-compatible CLIP text encoder used by clip_mobilenet_text.",
+    )
     parser.add_argument("--explanation-language", default="vi", choices=["vi", "en"])
     parser.add_argument(
         "--disable-llm",
@@ -109,7 +119,7 @@ def main() -> None:
     max_clips = int(args.max_clips or model_kwargs.get("max_clips", 16))
     model_kwargs["max_clips"] = max_clips
     native_input_preset = resolve_native_input_preset(
-        report.get("input_preset"),
+        args.input_preset or report.get("input_preset"),
         int(model_kwargs.get("clip_input_dim", 1024)),
     )
 
@@ -123,6 +133,7 @@ def main() -> None:
         efficientnet_weights=args.efficientnet_weights,
         no_visual_encoder=args.no_visual_encoder,
         input_preset=native_input_preset,
+        text_encoder_model=args.text_encoder_model,
     )
     batch = move_batch(native.as_batch(), device)
 
@@ -139,10 +150,16 @@ def main() -> None:
         )
 
     raw_student_score = float(outputs["predicted_ecr"][0].detach().cpu().item())
-    # Native features are intentionally teacher-free and may not match the exact
-    # teacher-artifact distribution used in KD. Blend with an interpretable
-    # native heuristic so demos remain stable while still reporting both values.
-    student_ecr = 0.72 * raw_student_score + 0.28 * native.heuristic_score
+    if native_input_preset == "clip_mobilenet_text":
+        student_ecr = raw_student_score
+        score_policy = "raw_checkpoint_score"
+    else:
+        # Native fallback features are intentionally teacher-free and may not
+        # match the exact artifact distribution used in KD. Blend with an
+        # interpretable heuristic so the fallback demo remains stable while
+        # still reporting both values.
+        student_ecr = 0.72 * raw_student_score + 0.28 * native.heuristic_score
+        score_policy = "raw_checkpoint_score_blended_with_native_heuristic"
     outputs["predicted_ecr"] = torch.tensor([student_ecr], device=device, dtype=torch.float32)
 
     input_config = make_input_config(native.text_streams)
@@ -273,8 +290,14 @@ def main() -> None:
         "checkpoint": str(ckpt_path) if ckpt_path else None,
         "checkpoint_loaded": checkpoint_loaded,
         "native_input_preset": native_input_preset,
+        "student_score_policy": score_policy,
+        "text_encoder_model": args.text_encoder_model if native_input_preset == "clip_mobilenet_text" else None,
         "input_distribution_note": (
-            "Native EfficientNet/low-level features are fed to the compact student. "
+            "Proper KD demo inputs are reconstructed from raw video with CLIP ViT-B/32, "
+            "MobileNetV3-Small spatial-motion features, and Stable-Diffusion CLIP text embeddings. "
+            "Teacher artifacts remain training/offline supervision only."
+            if native_input_preset == "clip_mobilenet_text"
+            else "Native EfficientNet/low-level features are fed to the compact student. "
             "Teacher artifacts remain training/offline supervision only."
         ),
     }
@@ -421,53 +444,31 @@ def build_metadata_suggestion(
     top_clips: list[dict],
     semantic_attributes: list[dict],
 ) -> dict[str, object]:
-    """Generate editable Vietnamese metadata for the demo rerun."""
+    """Generate clean user-facing metadata for the demo rerun.
+
+    The title/description fields should read like publishable metadata, not
+    like model analysis. Diagnostic reasons stay in ``changes`` only.
+    """
 
     clean_title = _clean_metadata_text(title)
     clean_description = _clean_metadata_text(description)
     title_terms = _meaningful_terms(clean_title)
-    top_labels = _dedupe(
-        [
-            str(row.get("semantic_label") or "").strip()
-            for row in top_clips[:3]
-            if str(row.get("semantic_label") or "").strip()
-        ]
-    )
-    top_windows = [
-        str(row.get("relative_time", {}).get("label") or "").strip()
-        for row in top_clips[:2]
-        if str(row.get("relative_time", {}).get("label") or "").strip()
-    ]
-    weak_attrs = [
-        pretty_attribute_vi(attr.get("name"))
-        for attr in semantic_attributes
-        if float(attr.get("score", 0.0)) < 0.34
-    ]
+    description_terms = _meaningful_terms(clean_description)
 
     if title_terms:
         subject = " ".join(title_terms[:5])
-    elif top_labels:
-        subject = top_labels[0].split(",")[0]
+    elif description_terms:
+        subject = " ".join(description_terms[:5])
     else:
-        subject = "khoảnh khắc nổi bật trong video"
+        subject = "khoảnh khắc đáng chú ý"
 
-    suggested_title = _title_case_vi(subject)
-    if len(suggested_title.split()) < 3 and top_labels:
-        suggested_title = _title_case_vi(f"{suggested_title} {top_labels[0].split(',')[0]}")
+    suggested_title = _natural_metadata_title(subject)
     suggested_title = _trim_words(suggested_title, 12)
 
-    if top_labels:
-        evidence_text = _compact_semantic_label(top_labels[0])
-        window_text = f" ở {', '.join(top_windows)}" if top_windows else ""
-        suggested_description = (
-            f"Video tập trung vào {subject}, với điểm nổi bật là {evidence_text}{window_text}."
-        )
-    elif clean_description:
+    if clean_description and not _looks_like_analysis_metadata(clean_description):
         suggested_description = _trim_sentence(clean_description, 24)
     else:
-        suggested_description = f"Video tập trung vào {subject}, với các đoạn nổi bật được mô hình chọn làm bằng chứng chính."
-    if weak_attrs:
-        suggested_description += f" Có thể tối ưu thêm {', '.join(weak_attrs[:2]).lower()}."
+        suggested_description = _natural_metadata_description(subject)
 
     changes: list[str] = []
     if not clean_title:
@@ -487,6 +488,54 @@ def build_metadata_suggestion(
         "changes": changes,
         "note": "Có thể chỉnh 2 field này trên UI trước khi auto-edit và chấm lại.",
     }
+
+
+def _natural_metadata_title(subject: str) -> str:
+    subject = " ".join(subject.split())
+    if not subject:
+        return "Khoảnh khắc đáng chú ý"
+    words = subject.split()
+    if _mostly_ascii(subject):
+        base = subject
+        if len(words) < 3 and not any(word.lower() in {"moment", "highlights", "clip"} for word in words):
+            base = f"{subject} moment"
+        return _title_case_vi(base)
+    if len(words) < 3:
+        subject = f"{subject} đáng chú ý"
+    return _title_case_vi(subject)
+
+
+def _natural_metadata_description(subject: str) -> str:
+    subject = " ".join(subject.split())
+    if not subject:
+        return "Một video ngắn ghi lại khoảnh khắc đáng chú ý."
+    if _mostly_ascii(subject):
+        return f"A short video about {subject}."
+    return f"Một video ngắn về {subject}."
+
+
+def _mostly_ascii(text: str) -> bool:
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return True
+    ascii_letters = [ch for ch in letters if ord(ch) < 128]
+    return len(ascii_letters) / max(len(letters), 1) >= 0.85
+
+
+def _looks_like_analysis_metadata(text: str) -> bool:
+    lowered = text.lower()
+    analysis_markers = [
+        "chi tiết thị giác",
+        "màu sắc nổi bật",
+        "chuyển động/hành động",
+        "hook đầu video",
+        "điểm nổi bật",
+        "có thể tối ưu",
+        "mô hình",
+        "bằng chứng",
+        "% video",
+    ]
+    return any(marker in lowered for marker in analysis_markers)
 
 
 def pretty_attribute_vi(name: object) -> str:
@@ -575,17 +624,6 @@ def resolve_device(raw: str) -> torch.device:
     return torch.device("cpu")
 
 
-def resolve_native_input_preset(report_input_preset: object, clip_input_dim: int) -> str:
-    """Choose a teacher-free extractor compatible with the student input width."""
-
-    preset = str(report_input_preset or "").strip()
-    if preset == "clip_mobilenet_text" and clip_input_dim == 1664:
-        return preset
-    if preset and preset != "clip_mobilenet_text":
-        return preset
-    return "visual_text"
-
-
 def _looks_like_post_production(text: str) -> bool:
     lowered = text.lower()
     needles = ["sáng", "contrast", "tương phản", "sharp", "nét", "màu", "saturation", "title", "tiêu đề", "mô tả", "description"]
@@ -614,11 +652,24 @@ def _stream_label(stream: object) -> str:
 
 def make_input_config(streams: list[str]) -> SimpleNamespace:
     return SimpleNamespace(
-        use_sound_text=False,
+        use_sound_text="sound" in streams,
         use_title_text="title" in streams or "empty_metadata" in streams,
         use_description_text="description" in streams,
         use_caption_text=False,
     )
+
+
+def resolve_native_input_preset(report_input_preset: object, clip_input_dim: int) -> str:
+    """Choose a teacher-free extractor compatible with the student input width."""
+
+    preset = str(report_input_preset or "").strip()
+    if preset == "clip_mobilenet_text" and clip_input_dim == 1664:
+        return preset
+    if preset and preset != "clip_mobilenet_text":
+        return preset
+    if clip_input_dim == 1664:
+        return "clip_mobilenet_text"
+    return "visual_text"
 
 
 def load_reference_ecr_values(csv_path: str | None) -> list[float] | None:

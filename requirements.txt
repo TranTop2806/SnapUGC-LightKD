@@ -1,6 +1,7 @@
 # Core
 numpy>=1.23,<2.0
 pandas>=2.0
+openpyxl>=3.1
 scipy>=1.10
 tqdm>=4.60
 pillow>=10.0
@@ -10,9 +11,17 @@ torch>=2.1
 torchvision>=0.16
 
 # Visual-language/text models
+open_clip_torch>=2.24
 transformers>=4.49.0
 sentence-transformers>=2.7
 accelerate>=0.27
+
+# Demo UI and video handling
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+imageio>=2.34
+opencv-python>=4.8,<5
 
 # Video/audio extraction
 eva-decord>=0.6.1

@@ -230,7 +230,7 @@ def explain_student_prediction(
         ),
         reverse=True,
     )
-    top_clips = clip_rows[: min(topk, len(clip_rows))]
+    top_clips = _select_diverse_clip_rows(clip_rows, topk=topk, n_clips=n_clips)
 
     stream_names = selected_text_streams(input_config)
     text_attention = outputs["text_attention"][0].detach().cpu().numpy()
@@ -290,6 +290,7 @@ def explain_student_prediction(
 
     reconstruction_error = abs(student_ecr - keep_only_ecr)
     necessity_delta = student_ecr - remove_selected_ecr
+    selected_vs_remaining_delta = keep_only_ecr - remove_selected_ecr
     attention_overlap = _distribution_overlap(temporal_attention, teacher_attention)
 
     band = engagement_band(student_ecr, reference_ecr_values)
@@ -297,6 +298,7 @@ def explain_student_prediction(
     confidence = explanation_confidence(
         reconstruction_error=reconstruction_error,
         necessity_delta=necessity_delta,
+        selected_vs_remaining_delta=selected_vs_remaining_delta,
         attention_overlap=attention_overlap,
         teacher_abs_delta=None if score_delta is None else abs(score_delta),
     )
@@ -353,6 +355,7 @@ def explain_student_prediction(
                     "reconstruction_error_abs": reconstruction_error,
                     "remove_selected_ecr": remove_selected_ecr,
                     "necessity_delta_student_minus_removed": necessity_delta,
+                    "selected_minus_remaining_ecr": selected_vs_remaining_delta,
                     "ablation_mode": "zero_input",
                 },
                 "confidence": confidence,
@@ -418,17 +421,24 @@ def explanation_confidence(
     necessity_delta: float,
     attention_overlap: float | None,
     teacher_abs_delta: float | None,
+    selected_vs_remaining_delta: float = 0.0,
 ) -> str:
     overlap = 0.0 if attention_overlap is None else attention_overlap
     teacher_ok = teacher_abs_delta is None or teacher_abs_delta <= 0.08
+    evidence_separated = selected_vs_remaining_delta >= 0.015
     if (
         reconstruction_error <= 0.035
         and abs(necessity_delta) >= 0.02
+        and evidence_separated
         and overlap >= 0.45
         and teacher_ok
     ):
         return "high"
-    if reconstruction_error <= 0.075 and (abs(necessity_delta) >= 0.01 or overlap >= 0.35):
+    if (
+        reconstruction_error <= 0.075
+        and evidence_separated
+        and (abs(necessity_delta) >= 0.01 or overlap >= 0.35)
+    ):
         return "medium"
     return "low"
 
@@ -466,6 +476,37 @@ def _direction_label(delta: float) -> str:
     if delta <= -0.01:
         return "suppresses_ecr"
     return "weak_or_mixed"
+
+
+def _select_diverse_clip_rows(
+    clip_rows: list[dict[str, Any]],
+    *,
+    topk: int,
+    n_clips: int,
+) -> list[dict[str, Any]]:
+    """Pick high-scoring clips while avoiding near-duplicate time segments."""
+
+    limit = min(topk, len(clip_rows))
+    if limit <= 1:
+        return clip_rows[:limit]
+    min_gap = max(2, n_clips // max(limit * 2, 1))
+    selected: list[dict[str, Any]] = []
+    selected_indices: list[int] = []
+    for row in clip_rows:
+        idx = int(row["clip_index"])
+        if all(abs(idx - prev) >= min_gap for prev in selected_indices):
+            selected.append(row)
+            selected_indices.append(idx)
+        if len(selected) >= limit:
+            return selected
+    for row in clip_rows:
+        idx = int(row["clip_index"])
+        if idx not in selected_indices:
+            selected.append(row)
+            selected_indices.append(idx)
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def _safe_float(value: object) -> float | None:

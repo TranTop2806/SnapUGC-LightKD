@@ -73,6 +73,8 @@ def health() -> dict[str, object]:
         "report_json": str(resolve_report_path()),
         "checkpoint": str(resolve_checkpoint_path(resolve_report_path())),
         "efficientnet_weights": str(resolve_efficientnet_path()),
+        "student_input_preset": os.environ.get("SNAPUGC_STUDENT_INPUT_PRESET", "auto"),
+        "text_encoder_model": os.environ.get("SNAPUGC_TEXT_ENCODER_MODEL", "CompVis/stable-diffusion-v1-4"),
         "llm_explainer": has_api_llm or has_local_llm,
         "llm_backend": "api" if has_api_llm else ("local" if has_local_llm else "template"),
         "local_llm_model": os.environ.get("SNAPUGC_LOCAL_LLM_MODEL"),
@@ -235,6 +237,12 @@ def run_student_inference(
         cmd.extend(["--labels-csv", str(labels_path)])
     if efficientnet_path:
         cmd.extend(["--efficientnet-weights", str(efficientnet_path)])
+    input_preset = os.environ.get("SNAPUGC_STUDENT_INPUT_PRESET")
+    if input_preset:
+        cmd.extend(["--input-preset", input_preset])
+    text_encoder_model = os.environ.get("SNAPUGC_TEXT_ENCODER_MODEL")
+    if text_encoder_model:
+        cmd.extend(["--text-encoder-model", text_encoder_model])
 
     try:
         completed = subprocess.run(
