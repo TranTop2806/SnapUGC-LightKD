@@ -88,7 +88,7 @@ echo "=== STUDENT KD TRAINING $(date -Is) ==="
   --artifact-dir "$ART" \
   --labels-csv "$SUBSET" \
   --save-dir "$KD" \
-  --input-preset visual_text \
+  --input-preset visual_text_sound \
   --epochs 40 \
   --batch 64 \
   --eval-batch 256 \

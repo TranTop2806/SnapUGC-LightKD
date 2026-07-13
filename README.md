@@ -59,7 +59,7 @@ The zip archive below contains the 5000 videos, labels, and fixed split files:
 data/official_snapugc_5k_locked_dataset.zip
 ```
 
-Dataset folder: [Google Drive](https://drive.google.com/drive/folders/12z6joLNokLQC1kewJwyaSd1LqiHtO2Kk)
+Dataset 5k and student checkpoint folder: [Google Drive](https://drive.google.com/drive/folders/1cwknHCOV5NTM1QhCx-QLv7LwDOZnkaHA)
 
 The final student protocol uses a deterministic `4000/500/500` split:
 
@@ -161,11 +161,11 @@ during demo inference.
 The default report and checkpoint are:
 
 ```text
-results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json
-results/kd_tuning_official_5k/v05_small_cosine_rank/student_kd_best.pth
+results/final_4000_500_500_2026/proper_kd_seed42/official_student_kd_report.json
+results/final_4000_500_500_2026/proper_kd_seed42/student_kd_best.pth
 ```
 
-Student checkpoint folder: [Google Drive](https://drive.google.com/drive/folders/1ZEiAhUktUHVVc0Zxct0_YgKUWAk7k9a_)
+Student checkpoint folder: [Google Drive](https://drive.google.com/drive/folders/1cwknHCOV5NTM1QhCx-QLv7LwDOZnkaHA)
 
 ### Student-Only New-Video Explanation
 
@@ -174,8 +174,8 @@ python scripts/infer_new_video_with_student_expl.py \
   --video /path/to/new_video.mp4 \
   --title "Short, specific title" \
   --description "Optional context" \
-  --report-json results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json \
-  --checkpoint results/kd_tuning_official_5k/v05_small_cosine_rank/student_kd_best.pth \
+  --report-json results/final_4000_500_500_2026/proper_kd_seed42/official_student_kd_report.json \
+  --checkpoint results/final_4000_500_500_2026/proper_kd_seed42/student_kd_best.pth \
   --labels-csv data/official_5k_split/split_all_5000.csv \
   --input-preset clip_mobilenet_text \
   --out-json results/demo_runs/example/result.json \
@@ -223,10 +223,11 @@ Leaving it out keeps the core environment compatible with the older
 official-model notebooks and still allows OpenAI API or template explanations.
 
 Generated reports and checkpoints under `results/` are intentionally not
-tracked by Git. Place the Proper KD report/checkpoint at the default paths above
-or set `SNAPUGC_REPORT_JSON` and `SNAPUGC_STUDENT_CHECKPOINT` to existing local
-files. The preparation step can copy `~/Downloads/student_kd_best.pth` into the
-default checkpoint path, but it still requires the report JSON to exist.
+tracked by Git. The default launcher uses the locked Proper KD run above. Set
+`SNAPUGC_REPORT_JSON` and `SNAPUGC_STUDENT_CHECKPOINT` when using a different,
+compatible report/checkpoint pair. The preparation step can copy
+`~/Downloads/student_kd_best.pth` into the selected checkpoint path, but the
+corresponding report JSON must already exist.
 
 ```bash
 # First run: verify/copy the checkpoint and cache the visual/text encoders and LLM.
@@ -263,16 +264,18 @@ bash scripts/run_demo_proper_kd_local_llm.sh
 
 With the default `auto` backend, these variables are used only when local Qwen
 is unavailable or inference fails. Set `SNAPUGC_LLM_FALLBACK_TO_OPENAI=0` with
-`SNAPUGC_LLM_BACKEND=local` to disable that fallback. To force a remote
-OpenAI-compatible endpoint instead of trying local Qwen first, use:
+`SNAPUGC_LLM_BACKEND=local` to disable that fallback. To force the OpenAI API
+instead of trying local Qwen first, create a local configuration file:
 
 ```bash
-export SNAPUGC_LLM_BACKEND="openai"
-export SNAPUGC_LLM_API_KEY="..."
-export SNAPUGC_LLM_BASE_URL="https://api.openai.com/v1"
-export SNAPUGC_LLM_MODEL="gpt-4o-mini"
+cp .env.example .env
+# Edit .env and set OPENAI_API_KEY.
 bash scripts/run_demo_proper_kd_local_llm.sh
 ```
+
+The launcher automatically exports variables from `.env`; it is ignored by
+Git. Set `SNAPUGC_LLM_BACKEND=openai`, `SNAPUGC_LLM_BASE_URL`, and
+`SNAPUGC_LLM_MODEL` there to select the remote endpoint and model.
 
 The UI displays model/checkpoint and LLM health, prediction and band, top clip
 evidence, semantic attributes, grouped recommendations, and editable suggested
@@ -359,18 +362,26 @@ teacher_attention_importance: attention_layers x T
 
 ## Official Teacher Run
 
-The primary GCloud runner is:
+The primary GCloud runner is `scripts/run_gcp_full_pipeline.sh`. It expects the
+complete video directory and six official checkpoints to already be present on
+the VM; it does not download videos. It symlinks the checkpoints into the
+vendored official source, runs `run_official_snapugc_evqa.py`, and can then
+train the cached-artifact student.
+
+Official teacher checkpoint folder: [Google Drive](https://drive.google.com/drive/folders/19_s6Z4R-iTaQHkRWFRn2Aby1FOy2cHes)
 
 ```bash
-SHUTDOWN_ON_EXIT=1 \
 ROOT_DIR=/workspace/SnapUGC-LightKD \
 SUBSET_CSV=/workspace/snapugc-data/train_subset_balanced_5000.csv \
-VIDEO_DIR=/workspace/snapugc-data/train_videos_balanced_5000 \
+VIDEO_DIR=/workspace/snapugc-data/official_balanced_5000_videos \
 OUT_DIR=/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32 \
 CHECKPOINT_DIR=/workspace/snapugc-checkpoints \
+OFFICIAL_REPO_DIR=/workspace/SnapUGC-LightKD/third_party/SnapUGC_Engagement \
 EXPORT_ARTIFACTS=1 \
 ARTIFACT_SHARD_SIZE=25 \
-bash scripts/run_gcp_official_balanced_5k_from_links.sh
+RUN_STUDENT=0 \
+SHUTDOWN_ON_EXIT=1 \
+bash scripts/run_gcp_full_pipeline.sh
 ```
 
 The run writes partial reports every 500 predictions and artifact shards every
@@ -386,12 +397,13 @@ teacher_artifacts/official_teacher_artifacts_0000_0024_captions.jsonl
 Sync outputs back to local:
 
 ```bash
-PROJECT=snapugc-lightkd \
-ZONE=asia-southeast1-a \
-INSTANCE=snapugc-l4-artifacts \
-REMOTE_OUT_DIR=/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32 \
-LOCAL_OUT_DIR=results/original_snapugc_official_balanced_5000_artifacts_g2_32 \
-bash scripts/sync_gcp_official_5k_outputs.sh
+export PROJECT=snapugc-lightkd
+export ZONE=asia-southeast1-a
+export INSTANCE=snapugc-l4-artifacts
+export REMOTE_OUT_DIR=/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32
+gcloud compute scp --project="$PROJECT" --zone="$ZONE" --recurse \
+  "$INSTANCE:$REMOTE_OUT_DIR/" \
+  results/original_snapugc_official_balanced_5000_artifacts_g2_32/
 ```
 
 ## Architecture Overview
@@ -548,7 +560,7 @@ Our KD architecture integrates advanced loss terms inspired by key scientific pu
 
 ### Loss Function Ablation Study
 
-To systematically evaluate the contribution of each distillation layer, we perform a grouped cumulative ablation on the validation split using the `visual_text_sound` preset. The results are verified from training logs on disk:
+The grouped cumulative validation ablation below uses the `visual_text_sound` preset:
 
 | Tier | Loss Terms Included | Scientific Reference Mapping | Validation Final Score | Marginal Gain |
 | :--- | :--- | :--- | :---: | :---: |
@@ -601,165 +613,58 @@ See [student_kd_architecture.md](./docs/student_kd_architecture.md) for more det
 
 ## Experimental Results
 
-### Final 4000/500/500 protocol
+### Protocol
 
-Five Full-KD runs use the same explicit split IDs and training seeds 42–46.
-Checkpoints are selected only on the 500-video validation set and then evaluated
-on the 500-video locked student test.
+All results use the fixed 5,000-video subset and the deterministic
+`4,000/500/500` train/validation/test split (`seed=20260706`). Checkpoints are
+selected on validation only and evaluated once on the locked 500-video test
+set. `Final = 0.4 * PLCC + 0.6 * SRCC`. Semi-independent student results are
+mean ± standard deviation over seeds 42–46; Proper KD is a controlled single
+seed (42) ablation and is reported without an uncertainty interval.
 
-| Model | Evaluated inputs | PLCC | SRCC | Final Score | Raw-input E2E params* (% teacher) | E2E latency / video |
-| :--- | :--- | ---: | ---: | ---: | ---: | :--- |
-| EVQA teacher reference | Raw video + title + description | 0.6958 | 0.6854 | **0.6895** | ~1,801.70M (100%) | ~34.6 s observed† |
-| Baseline Student, no KD (Transformer) | Cached `frame_fusion` + CLIP + text | 0.5925 ± 0.0069 | 0.5911 ± 0.0054 | 0.5917 ± 0.0040 | ~274.11M (15.21%) | Not measured E2E‡ |
-| Basic KD Student (logit-only) | Cached `frame_fusion` + CLIP + text | 0.6140 ± 0.0015 | 0.6066 ± 0.0032 | 0.6095 ± 0.0025 | ~274.11M (15.21%) | Not measured E2E‡ |
-| MLP Student, no KD | Pooled cached `frame_fusion` + CLIP + text | 0.5856 ± 0.0042 | 0.5844 ± 0.0083 | 0.5849 ± 0.0059 | ~274.00M (15.21%) | Not measured E2E‡ |
-| Ridge Student | Pooled cached `frame_fusion` + CLIP + text | 0.3745 | 0.3829 | 0.3795 | ~274.11M (15.21%) + regressor | Not measured E2E‡ |
-| RBF-SVR Student | Pooled cached `frame_fusion` + CLIP + text | 0.5630 | 0.5556 | 0.5585 | ~274.11M (15.21%) + support vectors | Not measured E2E‡ |
-| **Full KD Student** | Cached `frame_fusion` + CLIP + text | **0.6238 ± 0.0048** | **0.6149 ± 0.0056** | **0.6185 ± 0.0053** | **~274.11M (15.21%)** | Not measured E2E‡ |
-| Proper No KD (`clip_mobilenet_text`, seed 42) | Raw-video CLIP + MobileNet; regenerated title/description text | 0.4927 | 0.4835 | 0.4871 | ~217.12M (12.05%) | Not measured E2E |
-| Proper Basic KD, teacher ECR only (`clip_mobilenet_text`, seed 42) | Raw-video CLIP + MobileNet; regenerated title/description text | 0.5524 | 0.5386 | 0.5441 | ~217.12M (12.05%) | Not measured E2E |
-| Proper / Full Pipeline KD (`clip_mobilenet_text`) | Raw-video CLIP + MobileNet; regenerated title/description text | 0.5699 | 0.5631 | 0.5658 | ~217.12M (12.05%) | ≤6.85 s measured§ |
+### Locked-Test Results
 
-Full KD beats logit-only KD on all `5/5` paired seeds. Its paired Final gain is
-`+0.0089 ± 0.0032`, with a 95% t-interval `[+0.0050, +0.0129]`. Full KD also
-improves over the hard-label Transformer mean by `+0.0268` Final. These results
-separate the benefit of multi-loss distillation from the easier test sample.
+| Model | Inference inputs | PLCC | SRCC | Final |
+| :--- | :--- | ---: | ---: | ---: |
+| Official EVQA teacher | Raw video + title + description | 0.6958 | 0.6854 | **0.6895** |
+| Transformer, hard labels only | Cached `frame_fusion` + CLIP + text | 0.5925 ± 0.0069 | 0.5911 ± 0.0054 | 0.5917 ± 0.0040 |
+| Logit KD | Cached `frame_fusion` + CLIP + text | 0.6140 ± 0.0015 | 0.6066 ± 0.0032 | 0.6095 ± 0.0025 |
+| **Full KD** | Cached `frame_fusion` + CLIP + text | **0.6238 ± 0.0048** | **0.6149 ± 0.0056** | **0.6185 ± 0.0053** |
+| Proper KD, no KD loss | Raw-video CLIP + MobileNet + text | 0.4927 | 0.4835 | 0.4871 |
+| Proper KD, teacher-ECR only | Raw-video CLIP + MobileNet + text | 0.5524 | 0.5386 | 0.5441 |
+| **Proper Full KD** | Raw-video CLIP + MobileNet + text | **0.5699** | **0.5631** | **0.5658** |
 
-The three Proper configurations close the independent-input ablation: all use
-seed 42, the same CLIP + MobileNet input, student architecture, 4000/500/500
-split, and checkpoint-selection protocol. Proper No KD optimizes only
-`MSE(student_ecr, true_ecr)`. Proper Basic KD optimizes only
-`MSE(student_ecr, teacher_ecr)`, with no hard-label, feature, attention,
-ranking, or relation losses. Proper Full KD uses the complete objective.
+The semi-independent Full KD student improves Final by `+0.0089 ± 0.0032`
+over Logit KD in all five paired seeds (95% t-interval `[+0.0050, +0.0129]`)
+and by `+0.0268` over hard-label-only training. In the independent-input
+ablation, teacher-ECR matching contributes `+0.0569` Final over no KD; the
+remaining full objective adds `+0.0217`. The Proper result establishes an
+end-to-end teacher-free path, but its single seed is not a multi-seed claim.
 
-Teacher-ECR-only distillation raises Final from `0.4871` to `0.5441`
-(`+0.0569`), while the remaining full-KD signals add another `+0.0217`, reaching
-`0.5658`. End to end, Full KD improves PLCC by `+0.0772`, SRCC by `+0.0796`,
-and Final by `+0.0786` over No KD. This result shows that distillation remains
-effective after removing the teacher's `frame_fusion` input and separates the
-large contribution of soft teacher ECR from the additional contribution of
-feature, attention, ranking, and relation transfer. Together with the lower
-Proper Full-KD score relative to semi-independent Full KD, it supports the
-interpretation that much of the remaining gap comes from the independent
-student's weaker input representation rather than a failure of the KD
-objective. Because the Proper comparison currently has one paired seed, these
-effect sizes should not yet be reported as multi-seed means or confidence
-intervals.
+### Deployment Context
 
-Sources:
+| Path | Raw-input parameters | Measured latency |
+| :--- | ---: | :--- |
+| Official EVQA teacher | ~1,801.70M | ~34.6 s/video observed on L4* |
+| Semi-independent Full KD | ~274.11M (15.21% of teacher) | Cached-head median 1.931 ms on Apple M5† |
+| Proper Full KD | ~217.12M (12.05% of teacher) | <=6.85 s cold raw-video run‡ |
+
+\*Historical throughput includes teacher artifact export and is not a controlled latency benchmark.
+
+†This is not end-to-end latency because the cached `frame_fusion` input is produced by the teacher frontend.
+
+‡Includes feature extraction, counterfactual explanations, and thumbnail generation; prediction-only latency is lower but was not separately measured.
+
+### Reproducibility Artifacts
+
+The retained locked-test summaries are:
 
 ```text
 results/final_4000_500_500_2026/full_locked_test_evaluation.json
 results/final_4000_500_500_2026/full_locked_test_predictions.csv
 results/final_4000_500_500_2026/logit_locked_test_evaluation.json
 results/final_4000_500_500_2026/hard_transformer_locked_test_evaluation.json
-results/final_4000_500_500_2026/hard_mlp_locked_test_evaluation.json
 results/final_4000_500_500_2026/proper_no_kd_locked_test_evaluation.json
 results/final_4000_500_500_2026/proper_basic_kd_locked_test_evaluation.json
 results/final_4000_500_500_2026/proper_kd_locked_test_evaluation.json
-results/final_4000_500_500_2026/tabular_baselines.json
 ```
-
-\*Counts include pretrained neural feature extractors required to recreate the evaluated inputs; decoding/tokenization is excluded. Classical estimator state is listed separately because support vectors are not neural parameters.
-
-†Observed wall-clock throughput from the historical 5,000-video L4 teacher run, including artifact export; not a controlled same-hardware benchmark.
-
-‡Only cached-input forward latency has been measured for these models (Full KD median `1.931 ms` on Apple M5). A raw-video E2E value is intentionally not inferred because producing `frame_fusion` requires the teacher frontend.
-
-§A real cold raw-video Proper-KD run took `6.85 s`, but also generated counterfactual explanations and thumbnails. Therefore `6.85 s` is an upper bound on prediction-only inference, not a pure latency measurement.
-
-The cached-input latency benchmark for the four neural student heads is stored
-in `docs/benchmarks/student_forward_latency_apple_m5_4000_500_500.json`.
-
-### Explanation And Auto-Edit Diagnostic Study (500-Video External Subset)
-
-The end-to-end explanation and editing loop was run on 500 videos from
-`train_data.csv`. Their IDs were verified not to overlap the training,
-validation, or test videos used by the student experiments. The sample was
-stratified by True ECR to approximate a normal score distribution. For each
-video, the batch pipeline analyzed the original video/title/description,
-generated structured evidence and metadata suggestions, applied bounded visual
-edits, and reran the same Proper KD student on the edited video and suggested
-metadata. The batch used the deterministic template verbalizer rather than an
-LLM so that language generation did not add run-to-run variance.
-
-This external subset is intended for diagnostic analysis rather than as the
-locked student benchmark. It was curated to preserve the True-ECR distribution
-and contains 425 improved and 75 worsened cases. The observed `85.0%`
-improvement rate is therefore descriptive of this subset and should not be
-interpreted as the expected success rate on arbitrary videos.
-
-| Metric | 500-video subset |
-| :--- | ---: |
-| Videos / unique IDs | 500 / 500 |
-| Overlap with `official_5k_split` | 0 |
-| True ECR mean / std | 0.5017 / 0.1843 |
-| Predicted ECR mean / median | 0.4721 / 0.4912 |
-| After-edit ECR mean / median | 0.5070 / 0.5296 |
-| Improved / worsened | 425 / 75 |
-| Mean / median delta | +0.0349 / +0.0358 |
-| Delta interquartile range | [+0.0092, +0.0671] |
-| True-vs-predicted Pearson / MAE / RMSE | 0.373 / 0.176 / 0.225 |
-
-Local source artifacts:
-
-```text
-results/proper_kd_auto_edit_100_normal/subset500_normal_delta85/
-  proper_kd_auto_edit_500_normal_delta85.xlsx
-  selection_stats.json
-  analysis/analysis_summary.json
-```
-
-#### Score Distributions
-
-![True, predicted, and after-edit ECR distributions](./assets/experiments/auto_edit_delta85_ecr_distribution.png)
-
-The selected True-ECR distribution has mean `0.5017` and standard deviation
-`0.1843`, consistent with the intended approximately normal coverage. Within
-this subset, the after-edit distribution moves right relative to the
-before-edit prediction, but the broad overlap shows that the selected edits do
-not produce a uniform large shift across every video.
-
-![True, predicted, and after-edit ECR boxplot](./assets/experiments/auto_edit_delta85_ecr_boxplot.png)
-
-Both the mean and median increase after editing. The after-edit standard
-deviation decreases from `0.2116` to `0.1988`, so the score shift is accompanied
-by slightly less spread, while the wide boxes and whiskers show substantial
-video-level variation remains.
-
-#### Student Calibration On The Selected Videos
-
-![True ECR versus predicted ECR](./assets/experiments/auto_edit_delta85_true_vs_predicted.png)
-
-The student captures only a moderate cross-video relationship (`r=0.373`) and
-shows regression toward the mean: low-True-ECR videos are often overpredicted,
-while high-True-ECR videos are often underpredicted. Auto-edit therefore
-optimizes the student's learned score, not observed post-publication engagement.
-
-#### Before/After Auto-Edit
-
-![Predicted ECR before and after auto-edit](./assets/experiments/auto_edit_delta85_predicted_vs_after.png)
-
-The scatter shows the constructed `425/500` split above and below the no-change
-line. The remaining 75 decreases are operationally important: suggestions
-should remain user-reviewable, and a production workflow should compare the
-rerun score before accepting an edit.
-
-![Distribution of after-edit ECR delta](./assets/experiments/auto_edit_delta85_delta_distribution.png)
-
-The positive median confirms that the subset's gain is not produced only by a
-few large positive outliers. The full range is still asymmetric and wide
-(`-0.2876` to `+0.4823`), which exposes both strong wins and harmful edits that
-would be hidden by the mean alone.
-
-![Mean scores by True-ECR decile](./assets/experiments/auto_edit_delta85_by_true_decile.png)
-
-After-edit mean exceeds before-edit predicted mean in all ten True-ECR deciles
-inside the selected subset. At the same time, the widening gap between True ECR
-and both student curves in the highest deciles reinforces the calibration
-limit: a higher student score is evidence of model-aligned improvement, not
-proof of a real engagement increase.
-
-### KD Efficiency Reporting Convention
-
-Major KD work reports the model that actually runs at inference, not only the newly trained head. [DistilBERT](https://arxiv.org/abs/1910.01108) reports both model-size reduction and inference speed, while [TinyBERT](https://aclanthology.org/2020.findings-emnlp.372/) places `#Params`, FLOPs, and measured speedup beside task quality. Following that convention, this README uses raw-input end-to-end parameters for compression claims and retains student-module parameters only for checkpoint reproducibility. FLOPs and same-hardware latency remain future measurements and must not be inferred from parameter count alone.

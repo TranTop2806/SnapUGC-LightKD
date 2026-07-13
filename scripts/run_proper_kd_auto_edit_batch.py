@@ -261,11 +261,16 @@ def main() -> None:
     parser.add_argument("--max-clips", type=int, default=None)
     parser.add_argument(
         "--report-json",
-        default=str(ROOT / "results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json"),
+        default=str(
+            ROOT
+            / "results/final_4000_500_500_2026/proper_kd_seed42/official_student_kd_report.json"
+        ),
     )
     parser.add_argument(
         "--checkpoint",
-        default=str(ROOT / "results/kd_tuning_official_5k/v05_small_cosine_rank/student_kd_best.pth"),
+        default=str(
+            ROOT / "results/final_4000_500_500_2026/proper_kd_seed42/student_kd_best.pth"
+        ),
     )
     parser.add_argument("--labels-csv", default=str(ROOT / "data/official_5k_split/split_all_5000.csv"))
     parser.add_argument("--text-encoder-model", default="CompVis/stable-diffusion-v1-4")

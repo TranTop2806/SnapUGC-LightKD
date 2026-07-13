@@ -234,19 +234,21 @@ python scripts/run_official_snapugc_evqa.py \
   --max-samples 5000
 ```
 
-For the full balanced 5k GCP run, use the managed shell runner. It downloads
-missing videos from the Snapchat links first, falls back to Kaggle API for any
-missing files, symlinks the six required checkpoints, runs official inference,
-and saves live partial reports every 500 logged predictions:
+For the full balanced 5k GCP run, first upload the complete `<Id>.mp4` video
+directory and the six checkpoints. The runner symlinks the checkpoints, runs
+official inference, and saves teacher artifacts:
 
 ```bash
 SHUTDOWN_ON_EXIT=1 \
 ROOT_DIR=/workspace/SnapUGC-LightKD \
 SUBSET_CSV=/workspace/snapugc-data/train_subset_balanced_5000.csv \
-VIDEO_DIR=/workspace/snapugc-data/train_videos_balanced_5000 \
+VIDEO_DIR=/workspace/snapugc-data/official_balanced_5000_videos \
 OUT_DIR=/workspace/results/original_snapugc_official_balanced_5000 \
 CHECKPOINT_DIR=/workspace/snapugc-checkpoints \
-bash scripts/run_gcp_official_balanced_5k_from_links.sh
+OFFICIAL_REPO_DIR=/workspace/SnapUGC-LightKD/third_party/SnapUGC_Engagement \
+EXPORT_ARTIFACTS=1 \
+RUN_STUDENT=0 \
+bash scripts/run_gcp_full_pipeline.sh
 ```
 
 Partial outputs are written as:

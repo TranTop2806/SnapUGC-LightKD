@@ -14,13 +14,16 @@ REMOTE_ROOT="${REMOTE_ROOT:-/workspace/SnapUGC-LightKD}"
 REMOTE_DATA_DIR="${REMOTE_DATA_DIR:-/workspace/snapugc-data}"
 REMOTE_CHECKPOINT_DIR="${REMOTE_CHECKPOINT_DIR:-/workspace/snapugc-checkpoints}"
 LOCAL_SUBSET_CSV="${LOCAL_SUBSET_CSV:-data/official_5k_split/split_all_5000.csv}"
+LOCAL_VIDEO_DIR="${LOCAL_VIDEO_DIR:-data/official_balanced_5000_videos}"
 REMOTE_SUBSET_CSV="${REMOTE_SUBSET_CSV:-${REMOTE_DATA_DIR}/train_subset_balanced_5000.csv}"
+REMOTE_VIDEO_DIR="${REMOTE_VIDEO_DIR:-${REMOTE_DATA_DIR}/official_balanced_5000_videos}"
 LOCAL_CHECKPOINT_DIR="${LOCAL_CHECKPOINT_DIR:-third_party/SnapUGC_Engagement/ECR_inference/checkpoints}"
 REMOTE_OUT_DIR="${REMOTE_OUT_DIR:-/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32}"
 REMOTE_KD_OUT_DIR="${REMOTE_KD_OUT_DIR:-/workspace/results/kd_tuning_official_5k/v05_small_cosine_rank}"
 START_PIPELINE="${START_PIPELINE:-1}"
 UPLOAD_CHECKPOINTS="${UPLOAD_CHECKPOINTS:-1}"
 UPLOAD_SOURCE="${UPLOAD_SOURCE:-1}"
+UPLOAD_VIDEOS="${UPLOAD_VIDEOS:-1}"
 
 if [[ -z "$PROJECT" || -z "$ZONE" ]]; then
   echo "PROJECT and ZONE must be set, or configured in gcloud."
@@ -46,6 +49,11 @@ done
 if [[ ! -s "$LOCAL_SUBSET_CSV" ]]; then
   echo "Missing subset CSV: $LOCAL_SUBSET_CSV"
   exit 4
+fi
+
+if [[ "$UPLOAD_VIDEOS" == "1" && ! -d "$LOCAL_VIDEO_DIR" ]]; then
+  echo "Missing video directory: $LOCAL_VIDEO_DIR"
+  exit 5
 fi
 
 if ! gcloud compute instances describe "$INSTANCE" \
@@ -111,6 +119,15 @@ gcloud compute scp \
   "$LOCAL_SUBSET_CSV" \
   "${INSTANCE}:${REMOTE_SUBSET_CSV}"
 
+if [[ "$UPLOAD_VIDEOS" == "1" ]]; then
+  gcloud compute scp \
+    --project="$PROJECT" \
+    --zone="$ZONE" \
+    --recurse \
+    "$LOCAL_VIDEO_DIR" \
+    "${INSTANCE}:${REMOTE_DATA_DIR}/"
+fi
+
 if [[ "$UPLOAD_CHECKPOINTS" == "1" ]]; then
   for name in "${required_checkpoints[@]}"; do
     gcloud compute scp \
@@ -131,7 +148,7 @@ if [[ "$START_PIPELINE" == "1" ]]; then
   gcloud compute ssh "$INSTANCE" \
     --project="$PROJECT" \
     --zone="$ZONE" \
-    --command="cd '$REMOTE_ROOT' && nohup env ROOT_DIR='$REMOTE_ROOT' SUBSET_CSV='$REMOTE_SUBSET_CSV' CHECKPOINT_DIR='$REMOTE_CHECKPOINT_DIR' OUT_DIR='$REMOTE_OUT_DIR' KD_OUT_DIR='$REMOTE_KD_OUT_DIR' SHUTDOWN_ON_EXIT=1 bash scripts/run_gcp_full_pipeline.sh > /workspace/snapugc_full_pipeline.nohup.log 2>&1 < /dev/null &"
+    --command="cd '$REMOTE_ROOT' && nohup env ROOT_DIR='$REMOTE_ROOT' SUBSET_CSV='$REMOTE_SUBSET_CSV' VIDEO_DIR='$REMOTE_VIDEO_DIR' CHECKPOINT_DIR='$REMOTE_CHECKPOINT_DIR' OUT_DIR='$REMOTE_OUT_DIR' KD_OUT_DIR='$REMOTE_KD_OUT_DIR' OFFICIAL_REPO_DIR='$REMOTE_ROOT/third_party/SnapUGC_Engagement' SHUTDOWN_ON_EXIT=1 bash scripts/run_gcp_full_pipeline.sh > /workspace/snapugc_full_pipeline.nohup.log 2>&1 < /dev/null &"
 fi
 
 cat <<EOF
@@ -141,6 +158,6 @@ Monitor:
   gcloud compute ssh $INSTANCE --project=$PROJECT --zone=$ZONE --command='tail -f /workspace/snapugc_full_pipeline.nohup.log'
 
 Sync outputs after the VM stops:
-  PROJECT=$PROJECT ZONE=$ZONE INSTANCE=$INSTANCE REMOTE_OUT_DIR=$REMOTE_OUT_DIR LOCAL_OUT_DIR=results/original_snapugc_official_balanced_5000_artifacts_g2_32 bash scripts/sync_gcp_official_5k_outputs.sh
+  gcloud compute scp --project=$PROJECT --zone=$ZONE --recurse "$INSTANCE:$REMOTE_OUT_DIR/" results/original_snapugc_official_balanced_5000_artifacts_g2_32/
   gcloud compute scp --project=$PROJECT --zone=$ZONE --recurse "$INSTANCE:$REMOTE_KD_OUT_DIR/" results/kd_tuning_official_5k/v05_small_cosine_rank/
 EOF

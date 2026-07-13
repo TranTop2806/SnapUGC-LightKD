@@ -4,8 +4,24 @@ set -euo pipefail
 ROOT_DIR="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT_DIR"
 
-export SNAPUGC_REPORT_JSON="${SNAPUGC_REPORT_JSON:-$ROOT_DIR/results/kd_tuning_official_5k/v05_small_cosine_rank/official_student_kd_report.json}"
-export SNAPUGC_STUDENT_CHECKPOINT="${SNAPUGC_STUDENT_CHECKPOINT:-$ROOT_DIR/results/kd_tuning_official_5k/v05_small_cosine_rank/student_kd_best.pth}"
+# Load local, shell-compatible demo configuration without committing secrets.
+if [[ -f "$ROOT_DIR/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/.env"
+  set +a
+fi
+
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
+  else
+    PYTHON_BIN="$(command -v python3)"
+  fi
+fi
+
+export SNAPUGC_REPORT_JSON="${SNAPUGC_REPORT_JSON:-$ROOT_DIR/results/final_4000_500_500_2026/proper_kd_seed42/official_student_kd_report.json}"
+export SNAPUGC_STUDENT_CHECKPOINT="${SNAPUGC_STUDENT_CHECKPOINT:-$ROOT_DIR/results/final_4000_500_500_2026/proper_kd_seed42/student_kd_best.pth}"
 export SNAPUGC_LABELS_CSV="${SNAPUGC_LABELS_CSV:-$ROOT_DIR/data/official_5k_split/split_all_5000.csv}"
 export SNAPUGC_STUDENT_INPUT_PRESET="${SNAPUGC_STUDENT_INPUT_PRESET:-clip_mobilenet_text}"
 export SNAPUGC_TEXT_ENCODER_MODEL="${SNAPUGC_TEXT_ENCODER_MODEL:-CompVis/stable-diffusion-v1-4}"
@@ -17,18 +33,18 @@ export SNAPUGC_LOCAL_LLM_CACHE="${SNAPUGC_LOCAL_LLM_CACHE:-$HOME/.cache/snapugc-
 export SNAPUGC_LLM_FALLBACK_TO_OPENAI="${SNAPUGC_LLM_FALLBACK_TO_OPENAI:-1}"
 
 if [[ "${SNAPUGC_PREPARE_PROPER_KD:-0}" == "1" ]]; then
-  python scripts/prepare_proper_kd_demo.py \
+  "$PYTHON_BIN" scripts/prepare_proper_kd_demo.py \
     --report-json "$SNAPUGC_REPORT_JSON" \
     --checkpoint "$SNAPUGC_STUDENT_CHECKPOINT" \
     --text-encoder-model "$SNAPUGC_TEXT_ENCODER_MODEL"
 fi
 
 if [[ "${SNAPUGC_PREPARE_LOCAL_LLM:-0}" == "1" ]]; then
-  python scripts/prepare_local_llm.py \
+  "$PYTHON_BIN" scripts/prepare_local_llm.py \
     --model "$SNAPUGC_LOCAL_LLM_MODEL" \
     --cache-dir "$SNAPUGC_LOCAL_LLM_CACHE"
 fi
 
-exec python -m uvicorn demo_app.app:app \
+exec "$PYTHON_BIN" -m uvicorn demo_app.app:app \
   --host "${SNAPUGC_DEMO_HOST:-127.0.0.1}" \
   --port "${SNAPUGC_DEMO_PORT:-7861}"

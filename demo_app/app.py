@@ -62,11 +62,17 @@ def index() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict[str, object]:
-    llm_backend = os.environ.get("SNAPUGC_LLM_BACKEND", "auto")
+    llm_backend = os.environ.get("SNAPUGC_LLM_BACKEND", "auto").strip().lower()
     has_api_llm = bool(os.environ.get("SNAPUGC_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY"))
-    has_local_llm = llm_backend.lower() in {"local", "transformers", "hf"} or bool(
+    has_local_llm = llm_backend in {"auto", "local", "transformers", "hf"} and bool(
         os.environ.get("SNAPUGC_LOCAL_LLM_MODEL")
     )
+    if llm_backend in {"template", "none", "off", "disabled"}:
+        llm_status = "template"
+    elif llm_backend in {"openai", "api", "remote"}:
+        llm_status = "api" if has_api_llm else "unconfigured_api"
+    else:
+        llm_status = "api" if has_api_llm else ("local" if has_local_llm else "template")
     report_path = resolve_report_path()
     checkpoint_path = resolve_checkpoint_path(report_path)
     efficientnet_path = resolve_efficientnet_path()
@@ -79,8 +85,8 @@ def health() -> dict[str, object]:
         "efficientnet_weights": str(efficientnet_path) if efficientnet_path else None,
         "student_input_preset": os.environ.get("SNAPUGC_STUDENT_INPUT_PRESET", "auto"),
         "text_encoder_model": os.environ.get("SNAPUGC_TEXT_ENCODER_MODEL", "CompVis/stable-diffusion-v1-4"),
-        "llm_explainer": has_api_llm or has_local_llm,
-        "llm_backend": "api" if has_api_llm else ("local" if has_local_llm else "template"),
+        "llm_explainer": llm_status in {"api", "local"},
+        "llm_backend": llm_status,
         "local_llm_model": os.environ.get("SNAPUGC_LOCAL_LLM_MODEL"),
         "device_policy": "auto: cuda -> mps -> cpu",
     }

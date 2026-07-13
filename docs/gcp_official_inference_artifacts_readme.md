@@ -20,10 +20,9 @@ official SnapUGC paper code
 The important repo scripts are:
 
 ```text
-scripts/run_gcp_official_balanced_5k_from_links.sh
 scripts/run_official_snapugc_evqa.py
-scripts/monitor_gcp_official_partial.py
-scripts/sync_gcp_official_5k_outputs.sh
+scripts/run_gcp_full_pipeline.sh
+scripts/launch_gcp_full_pipeline.sh
 ```
 
 ## What Gets Exported
@@ -161,7 +160,7 @@ compatibility while keeping the original architecture/checkpoints unchanged.
 
 ## Prepare Input Data
 
-The managed GCP runner expects:
+The GCP runner expects:
 
 ```text
 /workspace/snapugc-data/train_subset_balanced_5000.csv
@@ -193,20 +192,13 @@ gcloud compute scp \
   "$INSTANCE:/workspace/snapugc-data/train_subset_balanced_5000.csv"
 ```
 
-The runner downloads videos automatically:
-
-1. First from `Download_link` in the CSV.
-2. Then fallback from Kaggle dataset API for missing videos.
-
-For Kaggle fallback, create `/workspace/kaggle.netrc` on the VM:
+Copy the complete directory directly into the VM; each file must be named
+`<Id>.mp4`:
 
 ```bash
-cat > /workspace/kaggle.netrc <<'EOF'
-machine www.kaggle.com
-login <YOUR_KAGGLE_USERNAME>
-password <YOUR_KAGGLE_API_KEY>
-EOF
-chmod 600 /workspace/kaggle.netrc
+gcloud compute scp --project="$PROJECT" --zone="$ZONE" --recurse \
+  data/official_balanced_5000_videos \
+  "$INSTANCE:/workspace/snapugc-data/"
 ```
 
 ## Prepare Official Checkpoints
@@ -223,7 +215,9 @@ The wrapper expects checkpoints here:
   efficientnet_v2_s_21k_ft1k-dbb43f38.pth
 ```
 
-The first five are the official SnapUGC checkpoint files. The
+The first five are the official SnapUGC checkpoint files. Download them from
+[the official teacher checkpoint folder](https://drive.google.com/drive/folders/19_s6Z4R-iTaQHkRWFRn2Aby1FOy2cHes).
+The
 `efficientnet_v2_s_21k_ft1k-dbb43f38.pth` file is also required because the
 official EfficientNetV2 code tries to fetch it from an old URL that now fails.
 
@@ -252,19 +246,15 @@ source .venv/bin/activate
 
 export ROOT_DIR=/workspace/SnapUGC-LightKD
 export SUBSET_CSV=/workspace/snapugc-data/train_subset_balanced_5000.csv
-export VIDEO_DIR=/workspace/snapugc-data/train_videos_balanced_5000
+export VIDEO_DIR=/workspace/snapugc-data/official_balanced_5000_videos
 export CHECKPOINT_DIR=/workspace/snapugc-checkpoints
-export OFFICIAL_REPO_DIR=/workspace/SnapUGC_Engagement
+export OFFICIAL_REPO_DIR=/workspace/SnapUGC-LightKD/third_party/SnapUGC_Engagement
 export OUT_DIR=/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32
 export LOG_FILE="$OUT_DIR/run_from_links.log"
 
 export EXPORT_ARTIFACTS=1
 export ARTIFACT_DIR="$OUT_DIR/teacher_artifacts"
 export ARTIFACT_SHARD_SIZE=25
-
-export SNAPUGC_LINK_WORKERS=16
-export SNAPUGC_KAGGLE_WORKERS=4
-export KAGGLE_NETRC=/workspace/kaggle.netrc
 
 export SNAPUGC_DATALOADER_WORKERS=1
 export SNAPUGC_MPLUG_CLIP_BATCH=4
@@ -273,7 +263,7 @@ export SNAPUGC_OFFICIAL_FRAME_BATCH=12
 export SHUTDOWN_ON_EXIT=1
 export RESET_LOG=1
 
-nohup bash scripts/run_gcp_official_balanced_5k_from_links.sh \
+RUN_STUDENT=0 nohup bash scripts/run_gcp_full_pipeline.sh \
   > "$OUT_DIR/nohup_runner.log" 2>&1 &
 ```
 
@@ -367,22 +357,14 @@ For KD training, prefer complete artifact shards.
 From local machine:
 
 ```bash
-PROJECT=snapugc-lightkd \
-ZONE=us-central1-a \
-INSTANCE=snapugc-l4-artifacts \
-REMOTE_OUT_DIR=/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32 \
-LOCAL_OUT_DIR=results/original_snapugc_official_balanced_5000_artifacts_g2_32 \
-SYNC_VIDEOS=0 \
-bash scripts/sync_gcp_official_5k_outputs.sh
+gcloud compute scp --project="$PROJECT" --zone="$ZONE" --recurse \
+  "$INSTANCE:/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32/" \
+  results/original_snapugc_official_balanced_5000_artifacts_g2_32/
 ```
 
 This copies predictions, reports, logs, and `teacher_artifacts`.
 
-Usually do not sync videos back unless needed:
-
-```bash
-SYNC_VIDEOS=1 FORCE_VIDEO_SYNC=1 bash scripts/sync_gcp_official_5k_outputs.sh
-```
+The command copies only the selected results directory, not the input videos.
 
 ## Verify Synced Artifacts Locally
 

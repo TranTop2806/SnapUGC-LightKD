@@ -7,7 +7,7 @@ VIDEO_DIR="${VIDEO_DIR:-/workspace/snapugc-data/train_videos_balanced_5000}"
 OUT_DIR="${OUT_DIR:-/workspace/results/original_snapugc_official_balanced_5000_artifacts_g2_32}"
 KD_OUT_DIR="${KD_OUT_DIR:-/workspace/results/kd_tuning_official_5k/v05_small_cosine_rank}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-/workspace/snapugc-checkpoints}"
-OFFICIAL_REPO_DIR="${OFFICIAL_REPO_DIR:-/workspace/SnapUGC_Engagement}"
+OFFICIAL_REPO_DIR="${OFFICIAL_REPO_DIR:-${ROOT_DIR}/third_party/SnapUGC_Engagement}"
 PYTHON_BIN="${PYTHON_BIN:-${ROOT_DIR}/.venv/bin/python}"
 LOG_FILE="${LOG_FILE:-${OUT_DIR}/full_pipeline.log}"
 SHUTDOWN_ON_EXIT="${SHUTDOWN_ON_EXIT:-1}"
@@ -62,18 +62,32 @@ fi
 
 if [[ "$RUN_OFFICIAL" == "1" ]]; then
   echo "=== OFFICIAL TEACHER + ARTIFACT EXPORT $(date -Is) ==="
-  SHUTDOWN_ON_EXIT=0 \
-  ROOT_DIR="$ROOT_DIR" \
-  SUBSET_CSV="$SUBSET_CSV" \
-  VIDEO_DIR="$VIDEO_DIR" \
-  OUT_DIR="$OUT_DIR" \
-  CHECKPOINT_DIR="$CHECKPOINT_DIR" \
-  OFFICIAL_REPO_DIR="$OFFICIAL_REPO_DIR" \
-  PYTHON_BIN="$PYTHON_BIN" \
-  EXPORT_ARTIFACTS="$EXPORT_ARTIFACTS" \
-  ARTIFACT_DIR="$ARTIFACT_DIR" \
-  ARTIFACT_SHARD_SIZE="$ARTIFACT_SHARD_SIZE" \
-  bash scripts/run_gcp_official_balanced_5k_from_links.sh
+  official_checkpoint_dir="$OFFICIAL_REPO_DIR/ECR_inference/checkpoints"
+  mkdir -p "$official_checkpoint_dir"
+  for name in EVQA.pth net_distort6_g_latest.pth r3d18_K_200ep.pth mPLUG2_MSRVTT_Caption.pth ViT-L-14.tar efficientnet_v2_s_21k_ft1k-dbb43f38.pth; do
+    if [[ ! -s "$CHECKPOINT_DIR/$name" ]]; then
+      echo "Missing checkpoint: $CHECKPOINT_DIR/$name" >&2
+      exit 3
+    fi
+    ln -sfn "$CHECKPOINT_DIR/$name" "$official_checkpoint_dir/$name"
+  done
+
+  teacher_args=(
+    scripts/run_official_snapugc_evqa.py
+    --official-repo-dir "$OFFICIAL_REPO_DIR"
+    --videos-dir "$VIDEO_DIR"
+    --csv-file "$SUBSET_CSV"
+    --out-dir "$OUT_DIR"
+    --python "$PYTHON_BIN"
+  )
+  if [[ "$EXPORT_ARTIFACTS" == "1" ]]; then
+    teacher_args+=(
+      --export-artifacts
+      --artifact-dir "$ARTIFACT_DIR"
+      --artifact-shard-size "$ARTIFACT_SHARD_SIZE"
+    )
+  fi
+  "$PYTHON_BIN" "${teacher_args[@]}"
 fi
 
 if [[ "$RUN_STUDENT" == "1" ]]; then
@@ -82,7 +96,7 @@ if [[ "$RUN_STUDENT" == "1" ]]; then
     --artifact-dir "$ARTIFACT_DIR" \
     --labels-csv "$SUBSET_CSV" \
     --save-dir "$KD_OUT_DIR" \
-    --input-preset visual_text \
+    --input-preset visual_text_sound \
     --epochs 40 \
     --batch 64 \
     --eval-batch 256 \

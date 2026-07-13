@@ -10,6 +10,9 @@ venv/
 
 # OS/editor
 .DS_Store
+.env
+.env.*
+!.env.example
 .idea/
 .vscode/
 
