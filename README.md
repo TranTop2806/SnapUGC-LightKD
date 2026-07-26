@@ -432,14 +432,16 @@ green blocks are intermediate representations, and gray blocks are outputs.
 Solid black arrows show forward computation; blue dashed arrows show exported
 direct student features; orange dashed arrows show training-only supervision.
 
-### 1. End-to-End Teacher-Student Pipeline
+### 1. End-to-End Full KD Pipeline
 
-Offline, the frozen teacher exports direct student features and privileged KD
-targets, while ground-truth ECR supervises the student objective. The resulting
-checkpoint is then loaded by the teacher-free Proper KD student for online
-inference on a new video and its metadata.
+The Full KD student takes two cached block outputs as direct inputs:
+`frame_fusion_feature` and `text_pooled`. Their extraction stops at the selected
+teacher frontend blocks; the teacher's remaining fusion and prediction path is
+not part of the student forward pass. A complete frozen-teacher pass is used
+once only to export privileged KD targets for training. At inference, the
+Full-KD-trained checkpoint runs without KD losses or teacher targets.
 
-![End-to-end teacher-student pipeline](./assets/architecture/endtoend.png)
+![End-to-end Full KD pipeline](./assets/architecture/full_kd_overview.png)
 
 ### 2. Official Teacher Inference Architecture
 
@@ -498,7 +500,7 @@ step, and processed by the compact temporal Transformer with title/description
 context. Teacher visual features and all training-only KD targets are absent
 from this ECR path.
 
-![Proper KD Student inference architecture](./assets/architecture/student_inference.png)
+![Proper KD Student inference architecture with pretrained extractors highlighted](./assets/architecture/student_inference_highlighted.png)
 
 The two student diagrams intentionally document the teacher-frontend-dependent
 `visual_text_sound` configuration and the independent-visual

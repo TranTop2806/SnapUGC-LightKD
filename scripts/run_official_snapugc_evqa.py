@@ -185,6 +185,19 @@ def patch_official_code(
             "def calculate(videos_dir, videos_files):",
             "@torch.inference_mode()\ndef calculate(videos_dir, videos_files):",
         )
+    if "SNAPUGC_CALCULATE_LATENCY_SECONDS" not in text:
+        text = text.replace(
+            "def calculate(videos_dir, videos_files):",
+            "def calculate(videos_dir, videos_files):\n"
+            "    _snapugc_calculate_start = __import__('time').perf_counter()",
+        )
+        text = text.replace(
+            '    with open("submission_baseline.csv", "w", newline="") as csvfile:',
+            "    torch.cuda.synchronize()\n"
+            "    print('SNAPUGC_CALCULATE_LATENCY_SECONDS', "
+            "__import__('time').perf_counter() - _snapugc_calculate_start)\n"
+            '    with open("submission_baseline.csv", "w", newline="") as csvfile:',
+        )
     if "torch.cuda.empty_cache()" not in text:
         text = text.replace(
             "        print(idx, video_id, out0_val)",

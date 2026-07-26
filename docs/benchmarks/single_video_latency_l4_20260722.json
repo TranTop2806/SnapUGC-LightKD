@@ -1,0 +1,42 @@
+{
+  "video": "/home/top/workspace/benchmark-inputs/5e14a1dfea4201ade02cbc5ddb31bb52.mp4",
+  "device": "cuda",
+  "gpu": "NVIDIA L4",
+  "proper_kd": {
+    "scope": "raw video decode + CLIP/MobileNet/text extraction + student forward",
+    "cold_ms": 9200.868059,
+    "warm_raw_video": {
+      "mean_ms": 523.9313638,
+      "median_ms": 516.590556,
+      "p90_ms": 544.3397964,
+      "min_ms": 509.29562,
+      "max_ms": 561.437294,
+      "std_ms": 19.016509960237798
+    },
+    "student_forward_only": {
+      "mean_ms": 2.68658655,
+      "median_ms": 2.684872,
+      "p90_ms": 2.7168433999999997,
+      "min_ms": 2.64143,
+      "max_ms": 2.768832,
+      "std_ms": 0.023999786500248282
+    },
+    "prediction": 0.3689142167568207,
+    "raw_repeats": 5,
+    "head_repeats": 200
+  },
+  "full_kd_cached": {
+    "scope": "cached teacher-frontend tensors + CLIP tensors to student ECR",
+    "latency": {
+      "mean_ms": 2.34640938,
+      "median_ms": 2.3427405,
+      "p90_ms": 2.3821315999999997,
+      "min_ms": 2.29991,
+      "max_ms": 2.430057,
+      "std_ms": 0.024528142360880075
+    },
+    "prediction": 0.3867243230342865,
+    "head_repeats": 200,
+    "sample_id": "5e14a1dfea4201ade02cbc5ddb31bb52"
+  }
+}

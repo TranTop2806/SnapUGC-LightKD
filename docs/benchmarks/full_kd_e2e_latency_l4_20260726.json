@@ -1,0 +1,82 @@
+{
+  "scope": "raw video + metadata -> selected teacher frontend -> Full KD student -> ECR",
+  "includes": [
+    "video decode and official frame preprocessing",
+    "EfficientNetV2 + distortion encoder + teacher frame-fusion projection",
+    "CLIP ViT-B/32 keyframe features",
+    "YAMNet sound labels",
+    "Stable Diffusion CLIP text encoder and mean-token pooling",
+    "Full KD student forward"
+  ],
+  "excludes": [
+    "model/checkpoint loading",
+    "mPLUG captioning",
+    "R3D motion encoder",
+    "teacher multimodal fusion, temporal transformer, and ECR head"
+  ],
+  "video": "/home/top/SnapUGC-LightKD/scripts/5e14a1dfea4201ade02cbc5ddb31bb52.mp4",
+  "device": "cuda",
+  "gpu": "NVIDIA L4",
+  "warmup": 2,
+  "repeats": 10,
+  "total": {
+    "mean_ms": 3748.9848822,
+    "median_ms": 3749.1992515,
+    "p90_ms": 3759.0067825,
+    "min_ms": 3736.102834,
+    "max_ms": 3764.054428,
+    "std_ms": 8.506613499443603
+  },
+  "stages": {
+    "decode": {
+      "mean_ms": 824.4159915,
+      "median_ms": 824.902505,
+      "p90_ms": 833.1025961,
+      "min_ms": 809.680314,
+      "max_ms": 837.365726,
+      "std_ms": 7.861191251519266
+    },
+    "frame_fusion": {
+      "mean_ms": 2674.7532311,
+      "median_ms": 2675.228348,
+      "p90_ms": 2685.396776,
+      "min_ms": 2661.950947,
+      "max_ms": 2686.93889,
+      "std_ms": 7.826059655043961
+    },
+    "clip": {
+      "mean_ms": 124.54297709999999,
+      "median_ms": 126.3337205,
+      "p90_ms": 128.08962599999998,
+      "min_ms": 119.965309,
+      "max_ms": 130.12863,
+      "std_ms": 3.75699692602992
+    },
+    "sound": {
+      "mean_ms": 113.95189869999999,
+      "median_ms": 113.190616,
+      "p90_ms": 116.4887999,
+      "min_ms": 111.017567,
+      "max_ms": 121.123817,
+      "std_ms": 2.85383525607734
+    },
+    "text": {
+      "mean_ms": 8.668261,
+      "median_ms": 8.425126500000001,
+      "p90_ms": 8.9583261,
+      "min_ms": 8.275763,
+      "max_ms": 10.531554,
+      "std_ms": 0.6392877493764448
+    },
+    "student": {
+      "mean_ms": 2.6026442,
+      "median_ms": 2.5439515,
+      "p90_ms": 2.6796686999999997,
+      "min_ms": 2.488194,
+      "max_ms": 3.071508,
+      "std_ms": 0.16058970275319653
+    }
+  },
+  "prediction_random_latency_model": 0.5234687924385071,
+  "note": "Student weights are randomly initialized; architecture matches the retained Full KD run. Weight values do not affect latency."
+}
