@@ -175,6 +175,16 @@ compatibility but are excluded from explanation ablation, ranking, and display.
 The teacher, EfficientNetV2-S, teacher artifacts, and KD losses are not called
 during demo inference.
 
+The attribution and evidence-ranking stages are shared with the Full KD
+explanation path. The figure below shows the Full KD variant, where a new video
+first recreates `frame_fusion_feature`, CLIP keyframes, and `text_pooled`. The
+current teacher-free UI replaces that first extraction block with the Proper KD
+CLIP + MobileNet frontend; the subsequent student prediction, ablation,
+evidence ranking, semantic labeling, and grounded verbalization stages remain
+the same.
+
+![Student-only explanation pipeline](./assets/architecture/explanation_pipeline.png)
+
 The default report and checkpoint are:
 
 ```text
@@ -441,7 +451,7 @@ not part of the student forward pass. A complete frozen-teacher pass is used
 once only to export privileged KD targets for training. At inference, the
 Full-KD-trained checkpoint runs without KD losses or teacher targets.
 
-![End-to-end Full KD pipeline](./assets/architecture/full_kd_overview.png)
+![End-to-end Full KD pipeline](./assets/architecture/overview.png)
 
 ### 2. Official Teacher Inference Architecture
 
@@ -500,7 +510,7 @@ step, and processed by the compact temporal Transformer with title/description
 context. Teacher visual features and all training-only KD targets are absent
 from this ECR path.
 
-![Proper KD Student inference architecture with pretrained extractors highlighted](./assets/architecture/student_inference_highlighted.png)
+![Proper KD Student inference architecture with pretrained extractors highlighted](./assets/architecture/student_inference.png)
 
 The two student diagrams intentionally document the teacher-frontend-dependent
 `visual_text_sound` configuration and the independent-visual
@@ -647,17 +657,36 @@ end-to-end teacher-free path, but its single seed is not a multi-seed claim.
 
 ### Deployment Context
 
-| Path | Raw-input parameters | Measured latency |
-| :--- | ---: | :--- |
-| Official EVQA teacher | ~1,801.70M | ~34.6 s/video observed on L4* |
-| Semi-independent Full KD | ~274.11M (15.21% of teacher) | Cached-head median 1.931 ms on Apple M5† |
-| Proper Full KD | ~217.12M (12.05% of teacher) | <=6.85 s cold raw-video run‡ |
+| Path | Raw-input parameters | Raw-video E2E latency on NVIDIA L4 |
+| :--- | ---: | ---: |
+| Official EVQA teacher | ~1,801.70M | 16.45 s/video |
+| Semi-independent Full KD | ~274.11M (15.21% of teacher) | 3.749 s/video |
+| Proper Full KD | ~217.12M (12.05% of teacher) | 0.517 s/video |
 
-\*Historical throughput includes teacher artifact export and is not a controlled latency benchmark.
+The benchmark uses one 5.15-second video, batch size 1, preloaded models, and
+reports warm-run latency. Full KD includes video decoding, EfficientNetV2-S,
+the distortion encoder, teacher frame-fusion projection, CLIP keyframes,
+YAMNet sound labels, Stable Diffusion text encoding, and student forward. It
+does not run mPLUG-2, ResNet3D-18, teacher multimodal fusion, the teacher
+temporal Transformer, or the teacher ECR head. Proper KD measures the current
+raw-video demo path with CLIP, MobileNetV3-Small, title/description text
+encoding, and student forward; its sound position is the same empty placeholder
+used by the demo checkpoint interface.
 
-†This is not end-to-end latency because the cached `frame_fusion` input is produced by the teacher frontend.
+Under this scope, Full KD is about `4.39x` faster than the teacher while
+retaining `89.7%` of its locked-test Final Score. Proper KD is about `31.9x`
+faster than the teacher and `7.26x` faster than Full KD, with a lower Final
+Score of `0.5658`. The Full KD timing uses the exact retained compute graph; its
+randomly initialized benchmark weights do not affect latency, and its measured
+student-forward stage closely matches the checkpoint-only benchmark.
 
-‡Includes feature extraction, counterfactual explanations, and thumbnail generation; prediction-only latency is lower but was not separately measured.
+Benchmark records:
+
+```text
+docs/benchmarks/teacher_single_video_l4_20260722.log
+docs/benchmarks/full_kd_e2e_latency_l4_20260726.json
+docs/benchmarks/single_video_latency_l4_20260722.json
+```
 
 ### Reproducibility Artifacts
 
